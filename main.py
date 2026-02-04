@@ -2,7 +2,7 @@ import sys
 import cv2
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget, QHBoxLayout,
-    QGroupBox, QColorDialog, QSpinBox, QCheckBox, QComboBox
+    QGroupBox, QColorDialog, QSpinBox, QCheckBox
 )
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QPixmap, QColor
@@ -20,6 +20,8 @@ class FaceApp(QWidget):
         self.rect_thickness = 2
         self.min_face_size = 50
         self.show_coords = False
+        self.show_fps = True  # fps opzionale
+        self.fullscreen = False
 
         # --- Webcam ---
         self.cap = cv2.VideoCapture(0)
@@ -34,7 +36,6 @@ class FaceApp(QWidget):
         # --- Video label ---
         self.video_label = QLabel()
         self.video_label.setFixedSize(640, 480)
-        self.video_label.setStyleSheet("border: 2px solid #555;")
 
         # --- Timer e FPS ---
         self.timer = QTimer()
@@ -60,15 +61,6 @@ class FaceApp(QWidget):
         main_layout.addWidget(self.video_label)
         self.setLayout(main_layout)
 
-        # --- Stile ---
-        self.setStyleSheet("""
-            QPushButton { background-color: #4CAF50; color: white; font-size: 14px; padding: 6px; border-radius: 5px; }
-            QPushButton:hover { background-color: #45a049; }
-            QGroupBox { font-weight: bold; border: 1px solid #aaa; border-radius: 5px; margin-top: 10px; }
-            QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top center; padding: 0 3px; }
-            QSpinBox { width: 60px; }
-        """)
-
     # -------------------------- CREATE SECTIONS --------------------------
     def create_webcam_group(self):
         group = QGroupBox("Webcam")
@@ -77,12 +69,6 @@ class FaceApp(QWidget):
         self.start_button = QPushButton("Start Camera")
         self.start_button.clicked.connect(self.toggle_camera)
         layout.addWidget(self.start_button)
-
-        layout.addWidget(QLabel("Risoluzione (simulata):"))
-        self.res_combo = QComboBox()
-        self.res_combo.addItems(["640x480", "800x600", "1280x720"])
-        # Non cambiamo realmente la webcam, solo scalatura
-        layout.addWidget(self.res_combo)
 
         group.setLayout(layout)
         return group
@@ -120,6 +106,11 @@ class FaceApp(QWidget):
         self.coords_check.stateChanged.connect(self.toggle_coords)
         layout.addWidget(self.coords_check)
 
+        self.fps_check = QCheckBox("Mostra FPS")
+        self.fps_check.setChecked(self.show_fps)
+        self.fps_check.stateChanged.connect(self.toggle_fps)
+        layout.addWidget(self.fps_check)
+
         self.snapshot_button = QPushButton("Salva Snapshot")
         self.snapshot_button.clicked.connect(self.save_snapshot)
         layout.addWidget(self.snapshot_button)
@@ -152,11 +143,17 @@ class FaceApp(QWidget):
     def toggle_coords(self, state):
         self.show_coords = state == 2
 
+    def toggle_fps(self, state):
+        self.show_fps = state == 2
+
     # -------------------------- UPDATE FRAME --------------------------
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret or frame is None:
             return
+
+        # Specchia la camera
+        frame = cv2.flip(frame, 1)
 
         # Calcola FPS
         current_time = time.time()
@@ -182,9 +179,10 @@ class FaceApp(QWidget):
                 cv2.putText(frame, f"({x},{y})", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Mostra FPS sul frame
-        cv2.putText(frame, f"FPS: {int(self.fps)}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        # Mostra FPS se abilitato
+        if self.show_fps:
+            cv2.putText(frame, f"FPS: {int(self.fps)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
         # Converti in RGB
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -203,6 +201,7 @@ class FaceApp(QWidget):
         ret, frame = self.cap.read()
         if not ret or frame is None:
             return
+        frame = cv2.flip(frame, 1)
         filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
         cv2.imwrite(filename, frame)
         print(f"Snapshot salvato: {filename}")
@@ -216,6 +215,14 @@ class FaceApp(QWidget):
 # -------------------------- MAIN --------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # --- Carica stile esterno ---
+    try:
+        with open("style.qss", "r") as f:
+            app.setStyleSheet(f.read())
+    except FileNotFoundError:
+        print("style.qss non trovato. Usando stile di default.")
+
     window = FaceApp()
     window.show()
     sys.exit(app.exec())
