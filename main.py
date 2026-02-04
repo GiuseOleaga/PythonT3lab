@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage, QPixmap, QColor
 import datetime
-
+import time
 
 class FaceApp(QWidget):
     def __init__(self):
@@ -21,7 +21,7 @@ class FaceApp(QWidget):
         self.min_face_size = 50
         self.show_coords = False
 
-        # Webcam
+        # --- Webcam ---
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             raise RuntimeError("Errore: impossibile aprire la webcam.")
@@ -31,17 +31,19 @@ class FaceApp(QWidget):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # Video label
+        # --- Video label ---
         self.video_label = QLabel()
         self.video_label.setFixedSize(640, 480)
         self.video_label.setStyleSheet("border: 2px solid #555;")
 
-        # Timer
+        # --- Timer e FPS ---
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.running = False
+        self.prev_time = time.time()
+        self.fps = 0
 
-        # Layout impostazioni
+        # --- Layout impostazioni ---
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
@@ -52,13 +54,13 @@ class FaceApp(QWidget):
         settings_group.setLayout(settings_layout)
         settings_group.setFixedWidth(300)
 
-        # Layout principale
+        # --- Layout principale ---
         main_layout = QHBoxLayout()
         main_layout.addWidget(settings_group)
         main_layout.addWidget(self.video_label)
         self.setLayout(main_layout)
 
-        # Stile
+        # --- Stile ---
         self.setStyleSheet("""
             QPushButton { background-color: #4CAF50; color: white; font-size: 14px; padding: 6px; border-radius: 5px; }
             QPushButton:hover { background-color: #45a049; }
@@ -76,10 +78,10 @@ class FaceApp(QWidget):
         self.start_button.clicked.connect(self.toggle_camera)
         layout.addWidget(self.start_button)
 
-        layout.addWidget(QLabel("Risoluzione:"))
+        layout.addWidget(QLabel("Risoluzione (simulata):"))
         self.res_combo = QComboBox()
         self.res_combo.addItems(["640x480", "800x600", "1280x720"])
-        self.res_combo.currentTextChanged.connect(self.change_resolution)
+        # Non cambiamo realmente la webcam, solo scalatura
         layout.addWidget(self.res_combo)
 
         group.setLayout(layout)
@@ -135,12 +137,7 @@ class FaceApp(QWidget):
             self.start_button.setText("Stop Camera")
         self.running = not self.running
 
-    def change_resolution(self, text):
-        w, h = map(int, text.split("x"))
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-
-    # -------------------------- SETTINGS --------------------------
+    # -------------------------- FACE SETTINGS --------------------------
     def choose_color(self):
         color = QColorDialog.getColor()
         if color.isValid():
@@ -155,11 +152,16 @@ class FaceApp(QWidget):
     def toggle_coords(self, state):
         self.show_coords = state == 2
 
-    # -------------------------- FRAME UPDATE --------------------------
+    # -------------------------- UPDATE FRAME --------------------------
     def update_frame(self):
         ret, frame = self.cap.read()
-        if not ret:
+        if not ret or frame is None:
             return
+
+        # Calcola FPS
+        current_time = time.time()
+        self.fps = 1.0 / (current_time - self.prev_time)
+        self.prev_time = current_time
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -176,20 +178,30 @@ class FaceApp(QWidget):
                 (self.rect_color.blue(), self.rect_color.green(), self.rect_color.red()),
                 self.rect_thickness
             )
-
             if self.show_coords:
                 cv2.putText(frame, f"({x},{y})", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+        # Mostra FPS sul frame
+        cv2.putText(frame, f"FPS: {int(self.fps)}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        # Converti in RGB
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
-        self.video_label.setPixmap(QPixmap.fromImage(qt_img))
+
+        # Scala il frame per la QLabel senza croppare
+        scaled_pix = QPixmap.fromImage(qt_img).scaled(
+            self.video_label.width(),
+            self.video_label.height()
+        )
+        self.video_label.setPixmap(scaled_pix)
 
     # -------------------------- SNAPSHOT --------------------------
     def save_snapshot(self):
         ret, frame = self.cap.read()
-        if not ret:
+        if not ret or frame is None:
             return
         filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
         cv2.imwrite(filename, frame)
@@ -201,7 +213,7 @@ class FaceApp(QWidget):
             self.cap.release()
         event.accept()
 
-
+# -------------------------- MAIN --------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = FaceApp()
