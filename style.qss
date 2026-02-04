@@ -1,0 +1,74 @@
+/* style.qss */
+
+/* --- Finestra principale --- */
+QWidget {
+    background-color: #a2c1ff;
+    color: #ECEFF4;
+    font-family: "Segoe UI", sans-serif;
+}
+
+/* --- Etichette --- */
+QLabel {
+    color: #ECEFF4;
+    font-size: 14px;
+}
+
+/* --- Pulsanti --- */
+QPushButton {
+    background-color: #173c68;
+    color: #ECEFF4;
+    font-size: 14px;
+    padding: 8px;
+    border-radius: 5px;
+}
+QPushButton:hover {
+    background-color: #263748;
+}
+QPushButton:pressed {
+    background-color: #13223f;
+}
+
+/* --- GroupBox --- */
+QGroupBox {
+    border: 1px solid #4C566A;
+    border-radius: 5px;
+    margin-top: 8px;
+    font-weight: bold;
+    padding: 5px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    padding: 0 4px;
+    color: #ECEFF4;
+}
+
+/* --- SpinBox --- */
+QSpinBox {
+    background-color: #3B4252;
+    color: #ECEFF4;
+    border: 1px solid #4C566A;
+    padding: 2px;
+    min-width: 60px;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #4C566A;
+    background-color: #434C5E;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #5E81AC;
+}
+
+/* --- CheckBox --- */
+QCheckBox {
+    color: #ECEFF4;
+    spacing: 5px;
+}
+
+/* --- Label video --- */
+QLabel#video_label {
+    border: 2px solid #4C566A;
+    background-color: #1E222D;
+}
