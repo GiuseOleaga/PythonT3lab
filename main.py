@@ -1,67 +1,71 @@
 import sys
 import cv2
-from PySide6.QtWidgets import (
-    QApplication, QLabel, QPushButton, QVBoxLayout, QWidget, QHBoxLayout,
-    QGroupBox, QColorDialog, QSpinBox, QCheckBox
-)
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QImage, QPixmap, QColor
-import datetime
 import time
+import datetime
+
+from PySide6.QtWidgets import (
+    QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QGroupBox, QColorDialog, QSpinBox, QCheckBox
+)
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QImage, QPixmap, QColor
+
 
 class FaceApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Face Detection App")
-        self.setFixedSize(1000, 540)
 
-        # --- Parametri ---
+        # ---------------- WINDOW ----------------
+        self.setWindowTitle("Face Detection App")
+        self.resize(1000, 540)
+        self.setMinimumSize(800, 450)
+
+        # ---------------- PARAMETERS ----------------
         self.rect_color = QColor(0, 255, 0)
         self.rect_thickness = 2
         self.min_face_size = 50
         self.show_coords = False
-        self.show_fps = True  # fps opzionale
-        self.fullscreen = False
+        self.show_fps = True
 
-        # --- Webcam ---
-        self.cap = cv2.VideoCapture(0)
+        # ---------------- WEBCAM ----------------
+        self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise RuntimeError("Errore: impossibile aprire la webcam.")
 
-        # Haar Cascade
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # --- Video label ---
-        self.video_label = QLabel()
-        self.video_label.setFixedSize(640, 480)
+        # ---------------- VIDEO LABEL ----------------
+        self.video_label = QLabel(alignment=Qt.AlignCenter)
+        self.video_label.setMinimumSize(640, 480)
 
-        # --- Timer e FPS ---
+        # ---------------- TIMER / FPS ----------------
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.running = False
         self.prev_time = time.time()
         self.fps = 0
 
-        # --- Layout impostazioni ---
+        # ---------------- SETTINGS PANEL ----------------
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
         settings_layout.addWidget(self.create_feedback_group())
         settings_layout.addStretch()
 
-        settings_group = QWidget()
-        settings_group.setLayout(settings_layout)
-        settings_group.setFixedWidth(300)
+        settings_widget = QWidget()
+        settings_widget.setLayout(settings_layout)
+        settings_widget.setFixedWidth(300)
 
-        # --- Layout principale ---
-        main_layout = QHBoxLayout()
-        main_layout.addWidget(settings_group)
-        main_layout.addWidget(self.video_label)
-        self.setLayout(main_layout)
+        # ---------------- MAIN LAYOUT ----------------
+        main_layout = QHBoxLayout(self)
+        main_layout.addWidget(settings_widget)
+        main_layout.addWidget(self.video_label, stretch=1)
 
-    # -------------------------- CREATE SECTIONS --------------------------
+    # ==================================================
+    # UI SECTIONS
+    # ==================================================
     def create_webcam_group(self):
         group = QGroupBox("Webcam")
         layout = QVBoxLayout()
@@ -70,11 +74,6 @@ class FaceApp(QWidget):
         self.start_button.clicked.connect(self.toggle_camera)
         layout.addWidget(self.start_button)
 
-        # Fullscreen toggle button
-        self.fullscreen_button = QPushButton("Enter Fullscreen")
-        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
-        layout.addWidget(self.fullscreen_button)
-
         group.setLayout(layout)
         return group
 
@@ -82,22 +81,26 @@ class FaceApp(QWidget):
         group = QGroupBox("Rilevamento Volti")
         layout = QVBoxLayout()
 
-        self.color_button = QPushButton("Cambia Colore Rettangolo")
+        self.color_button = QPushButton("Colore rettangolo")
         self.color_button.clicked.connect(self.choose_color)
         layout.addWidget(self.color_button)
 
-        layout.addWidget(QLabel("Spessore rettangolo:"))
+        layout.addWidget(QLabel("Spessore rettangolo"))
         self.thickness_spin = QSpinBox()
-        self.thickness_spin.setValue(self.rect_thickness)
         self.thickness_spin.setRange(1, 10)
-        self.thickness_spin.valueChanged.connect(self.update_thickness)
+        self.thickness_spin.setValue(self.rect_thickness)
+        self.thickness_spin.valueChanged.connect(
+            lambda v: setattr(self, "rect_thickness", v)
+        )
         layout.addWidget(self.thickness_spin)
 
-        layout.addWidget(QLabel("Dimensione minima volto:"))
+        layout.addWidget(QLabel("Dimensione minima volto"))
         self.min_face_spin = QSpinBox()
-        self.min_face_spin.setValue(self.min_face_size)
         self.min_face_spin.setRange(20, 500)
-        self.min_face_spin.valueChanged.connect(self.update_min_face)
+        self.min_face_spin.setValue(self.min_face_size)
+        self.min_face_spin.valueChanged.connect(
+            lambda v: setattr(self, "min_face_size", v)
+        )
         layout.addWidget(self.min_face_spin)
 
         group.setLayout(layout)
@@ -107,23 +110,34 @@ class FaceApp(QWidget):
         group = QGroupBox("Feedback")
         layout = QVBoxLayout()
 
-        self.coords_check = QCheckBox("Mostra coordinate volti")
-        self.coords_check.stateChanged.connect(self.toggle_coords)
+        self.coords_check = QCheckBox("Mostra coordinate")
+        self.coords_check.stateChanged.connect(
+            lambda s: setattr(self, "show_coords", s == Qt.Checked)
+        )
         layout.addWidget(self.coords_check)
 
         self.fps_check = QCheckBox("Mostra FPS")
         self.fps_check.setChecked(self.show_fps)
-        self.fps_check.stateChanged.connect(self.toggle_fps)
+        self.fps_check.stateChanged.connect(
+            lambda s: setattr(self, "show_fps", s == Qt.Checked)
+        )
         layout.addWidget(self.fps_check)
 
-        self.snapshot_button = QPushButton("Salva Snapshot")
+        self.snapshot_button = QPushButton("Salva snapshot")
         self.snapshot_button.clicked.connect(self.save_snapshot)
         layout.addWidget(self.snapshot_button)
 
         group.setLayout(layout)
         return group
 
-    # -------------------------- CAMERA --------------------------
+    # ==================================================
+    # ACTIONS
+    # ==================================================
+    def choose_color(self):
+        color = QColorDialog.getColor(self.rect_color, self, "Scegli colore")
+        if color.isValid():
+            self.rect_color = color
+
     def toggle_camera(self):
         if self.running:
             self.timer.stop()
@@ -133,47 +147,19 @@ class FaceApp(QWidget):
             self.start_button.setText("Stop Camera")
         self.running = not self.running
 
-    # -------------------------- FULLSCREEN --------------------------
-    def toggle_fullscreen(self):
-        if not self.fullscreen:
-            self.showFullScreen()
-            self.fullscreen_button.setText("Exit Fullscreen")
-        else:
-            self.showNormal()
-            self.fullscreen_button.setText("Enter Fullscreen")
-        self.fullscreen = not self.fullscreen
-
-    # -------------------------- FACE SETTINGS --------------------------
-    def choose_color(self):
-        color = QColorDialog.getColor()
-        if color.isValid():
-            self.rect_color = color
-
-    def update_thickness(self, value):
-        self.rect_thickness = value
-
-    def update_min_face(self, value):
-        self.min_face_size = value
-
-    def toggle_coords(self, state):
-        self.show_coords = state == 2
-
-    def toggle_fps(self, state):
-        self.show_fps = state == 2
-
-    # -------------------------- UPDATE FRAME --------------------------
+    # ==================================================
+    # FRAME UPDATE
+    # ==================================================
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret or frame is None:
             return
 
-        # Specchia la camera
         frame = cv2.flip(frame, 1)
 
-        # Calcola FPS
-        current_time = time.time()
-        self.fps = 1.0 / (current_time - self.prev_time)
-        self.prev_time = current_time
+        now = time.time()
+        self.fps = 1.0 / max(now - self.prev_time, 0.0001)
+        self.prev_time = now
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -186,64 +172,76 @@ class FaceApp(QWidget):
 
         for (x, y, w, h) in faces:
             cv2.rectangle(
-                frame, (x, y), (x + w, y + h),
-                (self.rect_color.blue(), self.rect_color.green(), self.rect_color.red()),
+                frame,
+                (x, y), (x + w, y + h),
+                (self.rect_color.blue(),
+                 self.rect_color.green(),
+                 self.rect_color.red()),
                 self.rect_thickness
             )
+
             if self.show_coords:
-                cv2.putText(frame, f"({x},{y})", (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(
+                    frame, f"{x},{y}",
+                    (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 255, 255), 1
+                )
 
-        # Mostra FPS se abilitato
         if self.show_fps:
-            cv2.putText(frame, f"FPS: {int(self.fps)}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            cv2.putText(
+                frame, f"FPS: {int(self.fps)}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1, (0, 255, 255), 2
+            )
 
-        # Converti in RGB
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        img = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
 
-        # Scala il frame per la QLabel senza croppare
-        scaled_pix = QPixmap.fromImage(qt_img).scaled(
-            self.video_label.width(),
-            self.video_label.height()
+        pixmap = QPixmap.fromImage(img).scaled(
+            self.video_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
         )
-        self.video_label.setPixmap(scaled_pix)
+        self.video_label.setPixmap(pixmap)
 
-    # -------------------------- SNAPSHOT --------------------------
+    # ==================================================
+    # SNAPSHOT
+    # ==================================================
     def save_snapshot(self):
         ret, frame = self.cap.read()
-        if not ret or frame is None:
+        if not ret:
             return
-        frame = cv2.flip(frame, 1)
-        filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
-        cv2.imwrite(filename, frame)
-        print(f"Snapshot salvato: {filename}")
 
-    # -------------------------- CLEAN EXIT --------------------------
+        frame = cv2.flip(frame, 1)
+        name = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
+        cv2.imwrite(name, frame)
+        print(f"Snapshot salvato: {name}")
+
+    # ==================================================
+    # CLEAN EXIT
+    # ==================================================
     def closeEvent(self, event):
-        # Stop timer if active
         if self.timer.isActive():
             self.timer.stop()
-        # If fullscreen, restore normal before exiting
-        if self.fullscreen:
-            self.showNormal()
-            self.fullscreen = False
         if self.cap.isOpened():
             self.cap.release()
         event.accept()
 
-# -------------------------- MAIN --------------------------
+
+# ==================================================
+# MAIN
+# ==================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # --- Carica stile esterno ---
     try:
         with open("style.qss", "r") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
-        print("style.qss non trovato. Usando stile di default.")
+        print("style.qss non trovato, uso stile di default.")
 
     window = FaceApp()
     window.show()
