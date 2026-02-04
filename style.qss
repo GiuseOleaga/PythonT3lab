@@ -2,7 +2,7 @@
 
 /* --- Finestra principale --- */
 QWidget {
-    background-color: #a2c1ff;
+    background-color: #262627;
     color: #ECEFF4;
     font-family: "Segoe UI", sans-serif;
 }
