@@ -70,6 +70,11 @@ class FaceApp(QWidget):
         self.start_button.clicked.connect(self.toggle_camera)
         layout.addWidget(self.start_button)
 
+        # Fullscreen toggle button
+        self.fullscreen_button = QPushButton("Enter Fullscreen")
+        self.fullscreen_button.clicked.connect(self.toggle_fullscreen)
+        layout.addWidget(self.fullscreen_button)
+
         group.setLayout(layout)
         return group
 
@@ -127,6 +132,16 @@ class FaceApp(QWidget):
             self.timer.start(30)
             self.start_button.setText("Stop Camera")
         self.running = not self.running
+
+    # -------------------------- FULLSCREEN --------------------------
+    def toggle_fullscreen(self):
+        if not self.fullscreen:
+            self.showFullScreen()
+            self.fullscreen_button.setText("Exit Fullscreen")
+        else:
+            self.showNormal()
+            self.fullscreen_button.setText("Enter Fullscreen")
+        self.fullscreen = not self.fullscreen
 
     # -------------------------- FACE SETTINGS --------------------------
     def choose_color(self):
@@ -208,6 +223,13 @@ class FaceApp(QWidget):
 
     # -------------------------- CLEAN EXIT --------------------------
     def closeEvent(self, event):
+        # Stop timer if active
+        if self.timer.isActive():
+            self.timer.stop()
+        # If fullscreen, restore normal before exiting
+        if self.fullscreen:
+            self.showNormal()
+            self.fullscreen = False
         if self.cap.isOpened():
             self.cap.release()
         event.accept()
