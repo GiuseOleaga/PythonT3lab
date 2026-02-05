@@ -1,17 +1,17 @@
-/* --- Finestra principale --- */
+/*========================== Finestra principale ========================= */
 QWidget {
     background-color: #262627;
     color: #ECEFF4;
     font-family: "Segoe UI", sans-serif;
 }
 
-/* --- Etichette --- */
+/* ========================== Etichette ================================== */
 QLabel {
     color: #ECEFF4;
     font-size: 14px;
 }
 
-/* --- Pulsanti generici --- */
+/* ========================== Pulsanti generici ========================== */
 QPushButton {
     background-color: #173c68;
     color: #ECEFF4;
@@ -26,7 +26,7 @@ QPushButton:pressed {
     background-color: #13223f;
 }
 
-/* --- GroupBox --- */
+/* ========================== GroupBox =================================== */
 QGroupBox {
     border: 1px solid #4C566A;
     border-radius: 5px;
@@ -40,7 +40,7 @@ QGroupBox::title {
     color: #ECEFF4;
 }
 
-/* --- Slider --- */
+/* ========================== Slider ===================================== */
 QSlider::groove:horizontal {
     border: 1px solid #4C566A;
     height: 8px;
@@ -58,13 +58,13 @@ QSlider::handle:horizontal:hover {
     background: #81A1C1;
 }
 
-/* --- CheckBox --- */
+/* ========================== CheckBox =================================== */
 QCheckBox {
     color: #ECEFF4;
     spacing: 5px;
 }
 
-/* --- Label video --- */
+/* ========================== Label video ================================ */
 QLabel#video_label {
     border: 2px solid #4C566A;
     background-color: #1E222D;
