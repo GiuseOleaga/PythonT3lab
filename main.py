@@ -5,7 +5,7 @@ import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
-    QHBoxLayout, QGroupBox, QColorDialog, QCheckBox
+    QHBoxLayout, QGroupBox, QColorDialog, QCheckBox, QSlider
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap, QColor
@@ -15,46 +15,38 @@ class FaceApp(QWidget):
     def __init__(self):
         super().__init__()
 
-        # ---------------- WINDOW ----------------
         self.setWindowTitle("APPLICAZIONE DI ACCESSO BIOMETRICO")
         self.resize(1000, 540)
         self.setMinimumSize(800, 450)
 
-        # ---------------- PARAMETERS ----------------
+        # Parametri
         self.rect_color = QColor(0, 255, 0)
         self.rect_thickness = 2
         self.show_coords = False
         self.show_fps = True
 
-        # ---------------- WEBCAM ----------------
+        # Webcam
         self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise RuntimeError("Errore: impossibile aprire la webcam.")
-
-        # Rilevazione più fluida: mantieni FPS camera reale
-        self.camera_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if not self.camera_fps or self.camera_fps <= 0:
-            self.camera_fps = 30  # fallback
-
-        self.timer_interval = int(1000.0 / self.camera_fps)
 
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # ---------------- VIDEO LABEL ----------------
+        # Video label
         self.video_label = QLabel(alignment=Qt.AlignCenter)
         self.video_label.setMinimumSize(640, 480)
         self.video_label.setObjectName("video_label")
 
-        # ---------------- TIMER / FPS ----------------
+        # Timer
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.running = False
         self.prev_time = time.time()
         self.fps = 0
 
-        # ---------------- SETTINGS PANEL ----------------
+        # Layout impostazioni
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
@@ -65,22 +57,18 @@ class FaceApp(QWidget):
         settings_widget.setLayout(settings_layout)
         settings_widget.setFixedWidth(300)
 
-        # ---------------- MAIN LAYOUT ----------------
         main_layout = QHBoxLayout(self)
         main_layout.addWidget(settings_widget)
         main_layout.addWidget(self.video_label, stretch=1)
 
-    # ==================================================
-    # UI SECTIONS
-    # ==================================================
+    # ---------------- UI SECTIONS ----------------
     def create_webcam_group(self):
         group = QGroupBox("Webcam")
         layout = QVBoxLayout()
 
         self.start_button = QPushButton("Start Camera")
-        self.start_button.setCheckable(True)  # per cambiare colore con :checked
-        self.start_button.setObjectName("start_button")
         self.start_button.clicked.connect(self.toggle_camera)
+        self.start_button.setStyleSheet("background-color: green; color: white;")
         layout.addWidget(self.start_button)
 
         group.setLayout(layout)
@@ -95,8 +83,13 @@ class FaceApp(QWidget):
         layout.addWidget(self.color_button)
 
         layout.addWidget(QLabel("Spessore rettangolo"))
-        self.thickness_spin = QCheckBox()  # rimane solo lo spessore come slider se vuoi
-        layout.addWidget(self.thickness_spin)
+        self.thickness_slider = QSlider(Qt.Horizontal)
+        self.thickness_slider.setRange(1, 10)
+        self.thickness_slider.setValue(self.rect_thickness)
+        self.thickness_slider.setTickPosition(QSlider.TicksBelow)
+        self.thickness_slider.setTickInterval(1)
+        self.thickness_slider.valueChanged.connect(self.update_thickness)
+        layout.addWidget(self.thickness_slider)
 
         group.setLayout(layout)
         return group
@@ -106,16 +99,13 @@ class FaceApp(QWidget):
         layout = QVBoxLayout()
 
         self.coords_check = QCheckBox("Mostra coordinate")
-        self.coords_check.stateChanged.connect(
-            lambda s: setattr(self, "show_coords", s == Qt.Checked)
-        )
+        self.coords_check.setChecked(self.show_coords)
+        self.coords_check.toggled.connect(self.toggle_coords)
         layout.addWidget(self.coords_check)
 
         self.fps_check = QCheckBox("Mostra FPS")
         self.fps_check.setChecked(self.show_fps)
-        self.fps_check.stateChanged.connect(
-            lambda s: setattr(self, "show_fps", s == Qt.Checked)
-        )
+        self.fps_check.toggled.connect(self.toggle_fps)
         layout.addWidget(self.fps_check)
 
         self.snapshot_button = QPushButton("Salva snapshot")
@@ -125,25 +115,34 @@ class FaceApp(QWidget):
         group.setLayout(layout)
         return group
 
-    # ==================================================
-    # ACTIONS
-    # ==================================================
+    # ---------------- ACTIONS ----------------
     def choose_color(self):
         color = QColorDialog.getColor(self.rect_color, self, "Scegli colore")
         if color.isValid():
             self.rect_color = color
 
+    def update_thickness(self, value):
+        self.rect_thickness = value
+
+    def toggle_coords(self, checked: bool):
+        self.show_coords = checked
+
+    def toggle_fps(self, checked: bool):
+        self.show_fps = checked
+
     def toggle_camera(self):
         if self.running:
             self.timer.stop()
-            self.video_label.clear()  # disattiva visivamente la camera
+            self.video_label.clear()
+            self.start_button.setText("Start Camera")
+            self.start_button.setStyleSheet("background-color: green; color: white;")
         else:
-            self.timer.start(self.timer_interval)
+            self.timer.start(30)
+            self.start_button.setText("Stop Camera")
+            self.start_button.setStyleSheet("background-color: red; color: white;")
         self.running = not self.running
 
-    # ==================================================
-    # FRAME UPDATE
-    # ==================================================
+    # ---------------- FRAME UPDATE ----------------
     def update_frame(self):
         ret, frame = self.cap.read()
         if not ret:
@@ -157,22 +156,15 @@ class FaceApp(QWidget):
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        faces = self.detector.detectMultiScale(
-            gray,
-            scaleFactor=1.2,
-            minNeighbors=6
-        )
+        faces = self.detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6)
 
         for (x, y, w, h) in faces:
             cv2.rectangle(
                 frame,
                 (x, y), (x + w, y + h),
-                (self.rect_color.blue(),
-                 self.rect_color.green(),
-                 self.rect_color.red()),
+                (self.rect_color.blue(), self.rect_color.green(), self.rect_color.red()),
                 self.rect_thickness
             )
-
             if self.show_coords:
                 cv2.putText(
                     frame, f"{x},{y}",
@@ -200,22 +192,17 @@ class FaceApp(QWidget):
         )
         self.video_label.setPixmap(pixmap)
 
-    # ==================================================
-    # SNAPSHOT
-    # ==================================================
+    # ---------------- SNAPSHOT ----------------
     def save_snapshot(self):
         ret, frame = self.cap.read()
         if not ret:
             return
-
         frame = cv2.flip(frame, 1)
         name = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
         cv2.imwrite(name, frame)
         print(f"Snapshot salvato: {name}")
 
-    # ==================================================
-    # CLEAN EXIT
-    # ==================================================
+    # ---------------- CLEAN EXIT ----------------
     def closeEvent(self, event):
         if self.timer.isActive():
             self.timer.stop()
@@ -235,6 +222,7 @@ if __name__ == "__main__":
 
     window = FaceApp()
     window.show()
+
     try:
         sys.exit(app.exec())
     except KeyboardInterrupt:

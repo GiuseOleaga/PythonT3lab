@@ -1,5 +1,3 @@
-/* style.qss */
-
 /* --- Finestra principale --- */
 QWidget {
     background-color: #262627;
@@ -28,16 +26,6 @@ QPushButton:pressed {
     background-color: #13223f;
 }
 
-/* --- Pulsante Start Camera --- */
-QPushButton#start_button {
-    background-color: #27ae60; /* verde fermo */
-    color: #ECEFF4;
-    font-weight: bold;
-}
-QPushButton#start_button:checked {
-    background-color: #c0392b; /* rosso premuto */
-}
-
 /* --- GroupBox --- */
 QGroupBox {
     border: 1px solid #4C566A;
@@ -52,6 +40,24 @@ QGroupBox::title {
     color: #ECEFF4;
 }
 
+/* --- Slider --- */
+QSlider::groove:horizontal {
+    border: 1px solid #4C566A;
+    height: 8px;
+    background: #3B4252;
+    border-radius: 4px;
+}
+QSlider::handle:horizontal {
+    background: #5E81AC;
+    border: 1px solid #4C566A;
+    width: 16px;
+    margin: -4px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #81A1C1;
+}
+
 /* --- CheckBox --- */
 QCheckBox {
     color: #ECEFF4;
@@ -62,23 +68,4 @@ QCheckBox {
 QLabel#video_label {
     border: 2px solid #4C566A;
     background-color: #1E222D;
-}
-
-/* --- SpinBox --- */
-QSpinBox {
-    background-color: #3B4252;
-    color: #ECEFF4;
-    border: 1px solid #4C566A;
-    padding: 2px;
-    min-width: 60px;
-}
-QSpinBox::up-button, QSpinBox::down-button {
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    width: 20px;
-    border-left: 1px solid #4C566A;
-    background-color: #434C5E;
-}
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-    background-color: #5E81AC;
 }
