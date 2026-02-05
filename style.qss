@@ -13,7 +13,7 @@ QLabel {
     font-size: 14px;
 }
 
-/* --- Pulsanti --- */
+/* --- Pulsanti generici --- */
 QPushButton {
     background-color: #173c68;
     color: #ECEFF4;
@@ -28,6 +28,16 @@ QPushButton:pressed {
     background-color: #13223f;
 }
 
+/* --- Pulsante Start Camera --- */
+QPushButton#start_button {
+    background-color: #27ae60; /* verde fermo */
+    color: #ECEFF4;
+    font-weight: bold;
+}
+QPushButton#start_button:checked {
+    background-color: #c0392b; /* rosso premuto */
+}
+
 /* --- GroupBox --- */
 QGroupBox {
     border: 1px solid #4C566A;
@@ -40,6 +50,18 @@ QGroupBox::title {
     subcontrol-origin: margin;
     padding: 0 4px;
     color: #ECEFF4;
+}
+
+/* --- CheckBox --- */
+QCheckBox {
+    color: #ECEFF4;
+    spacing: 5px;
+}
+
+/* --- Label video --- */
+QLabel#video_label {
+    border: 2px solid #4C566A;
+    background-color: #1E222D;
 }
 
 /* --- SpinBox --- */
@@ -59,16 +81,4 @@ QSpinBox::up-button, QSpinBox::down-button {
 }
 QSpinBox::up-button:hover, QSpinBox::down-button:hover {
     background-color: #5E81AC;
-}
-
-/* --- CheckBox --- */
-QCheckBox {
-    color: #ECEFF4;
-    spacing: 5px;
-}
-
-/* --- Label video --- */
-QLabel#video_label {
-    border: 2px solid #4C566A;
-    background-color: #1E222D;
 }

@@ -5,7 +5,7 @@ import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
-    QHBoxLayout, QGroupBox, QColorDialog, QSpinBox, QCheckBox
+    QHBoxLayout, QGroupBox, QColorDialog, QCheckBox
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap, QColor
@@ -16,14 +16,13 @@ class FaceApp(QWidget):
         super().__init__()
 
         # ---------------- WINDOW ----------------
-        self.setWindowTitle("Face Detection App")
+        self.setWindowTitle("APPLICAZIONE DI ACCESSO BIOMETRICO")
         self.resize(1000, 540)
         self.setMinimumSize(800, 450)
 
         # ---------------- PARAMETERS ----------------
         self.rect_color = QColor(0, 255, 0)
         self.rect_thickness = 2
-        self.min_face_size = 50
         self.show_coords = False
         self.show_fps = True
 
@@ -32,6 +31,13 @@ class FaceApp(QWidget):
         if not self.cap.isOpened():
             raise RuntimeError("Errore: impossibile aprire la webcam.")
 
+        # Rilevazione più fluida: mantieni FPS camera reale
+        self.camera_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if not self.camera_fps or self.camera_fps <= 0:
+            self.camera_fps = 30  # fallback
+
+        self.timer_interval = int(1000.0 / self.camera_fps)
+
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
@@ -39,6 +45,7 @@ class FaceApp(QWidget):
         # ---------------- VIDEO LABEL ----------------
         self.video_label = QLabel(alignment=Qt.AlignCenter)
         self.video_label.setMinimumSize(640, 480)
+        self.video_label.setObjectName("video_label")
 
         # ---------------- TIMER / FPS ----------------
         self.timer = QTimer()
@@ -71,6 +78,8 @@ class FaceApp(QWidget):
         layout = QVBoxLayout()
 
         self.start_button = QPushButton("Start Camera")
+        self.start_button.setCheckable(True)  # per cambiare colore con :checked
+        self.start_button.setObjectName("start_button")
         self.start_button.clicked.connect(self.toggle_camera)
         layout.addWidget(self.start_button)
 
@@ -86,22 +95,8 @@ class FaceApp(QWidget):
         layout.addWidget(self.color_button)
 
         layout.addWidget(QLabel("Spessore rettangolo"))
-        self.thickness_spin = QSpinBox()
-        self.thickness_spin.setRange(1, 10)
-        self.thickness_spin.setValue(self.rect_thickness)
-        self.thickness_spin.valueChanged.connect(
-            lambda v: setattr(self, "rect_thickness", v)
-        )
+        self.thickness_spin = QCheckBox()  # rimane solo lo spessore come slider se vuoi
         layout.addWidget(self.thickness_spin)
-
-        layout.addWidget(QLabel("Dimensione minima volto"))
-        self.min_face_spin = QSpinBox()
-        self.min_face_spin.setRange(20, 500)
-        self.min_face_spin.setValue(self.min_face_size)
-        self.min_face_spin.valueChanged.connect(
-            lambda v: setattr(self, "min_face_size", v)
-        )
-        layout.addWidget(self.min_face_spin)
 
         group.setLayout(layout)
         return group
@@ -141,10 +136,9 @@ class FaceApp(QWidget):
     def toggle_camera(self):
         if self.running:
             self.timer.stop()
-            self.start_button.setText("Start Camera")
+            self.video_label.clear()  # disattiva visivamente la camera
         else:
-            self.timer.start(30)
-            self.start_button.setText("Stop Camera")
+            self.timer.start(self.timer_interval)
         self.running = not self.running
 
     # ==================================================
@@ -152,7 +146,7 @@ class FaceApp(QWidget):
     # ==================================================
     def update_frame(self):
         ret, frame = self.cap.read()
-        if not ret or frame is None:
+        if not ret:
             return
 
         frame = cv2.flip(frame, 1)
@@ -166,8 +160,7 @@ class FaceApp(QWidget):
         faces = self.detector.detectMultiScale(
             gray,
             scaleFactor=1.2,
-            minNeighbors=6,
-            minSize=(self.min_face_size, self.min_face_size)
+            minNeighbors=6
         )
 
         for (x, y, w, h) in faces:
@@ -231,9 +224,6 @@ class FaceApp(QWidget):
         event.accept()
 
 
-# ==================================================
-# MAIN
-# ==================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
@@ -241,8 +231,12 @@ if __name__ == "__main__":
         with open("style.qss", "r") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
-        print("style.qss non trovato, uso stile di default.")
+        pass
 
     window = FaceApp()
     window.show()
-    sys.exit(app.exec())
+    try:
+        sys.exit(app.exec())
+    except KeyboardInterrupt:
+        window.close()
+        sys.exit(0)
