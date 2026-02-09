@@ -28,34 +28,39 @@ STATS_FILE = "stats.json"
 
 
 # ========================================================================================================================================================================================================================
-# PRIMARY SECTION: MAIN APPLICATION CLASS========================================================================================================================================================================================
+# APPLICAZIONE MAIN ========================================================================================================================================================================================
 # ========================================================================================================================================================================================================================
 class FaceApp(QWidget):
 
     # ============================================================================================
-    # SECONDARY SECTION: INITIALIZATION & SETUP
+    # INIZZIALIZZAZIONE DELL'APPLICAZIONE, CON CONFIGURAZIONE DELLA FINESTRA
     # ============================================================================================
     def __init__(self):
         super().__init__()
         
-        # ---- TERTIARY: Window Setup ----
+        # ---- configurazione della finestra principale ----
         self.setWindowTitle("APPLICAZIONE DI ACCESSO BIOMETRICO")
         self.resize(1100, 600)
         self.setMinimumSize(900, 500)
 
-        # ---- TERTIARY: Base Parameters ----
+        # ---- parametri base ----
         self.rect_color = QColor(0, 255, 0)
         self.rect_thickness = 2
         self.show_coords = False
         self.show_fps = True
         self.zoom_factor = 1.0
+        self.last_frame = None
         
-        # ---- TERTIARY: Recording State ----
+        # ---- filtri video ----
+        self.gray_filter = False
+
+
+        # ---- stato di registrazione ----
         self.recording = False
         self.video_writer = None
         self.record_start_time = None
 
-        # ---- TERTIARY: Statistics ----
+        # ---- statisctiche ----
         self.photo_count = 0
         self.video_count = 0
         self.last_photo = "Nessuna"
@@ -63,7 +68,7 @@ class FaceApp(QWidget):
         self.save_path = os.getcwd()
         self.load_stats()
 
-        # ---- TERTIARY: Geolocation ----
+        # ---- geolocalizzazione ----
         try:
             g = geocoder.ip("me")
             city = g.city if g.city else "Località sconosciuta"
@@ -72,7 +77,7 @@ class FaceApp(QWidget):
         except Exception:
             self.location = "Località sconosciuta"
 
-        # ---- TERTIARY: Webcam Initialization ----
+        # ---- inizzializzazione webcam ----
         self.available_indices, self.available_names = self.scan_webcams()
         if not self.available_indices:
             raise RuntimeError("Nessuna webcam trovata.")
@@ -83,12 +88,12 @@ class FaceApp(QWidget):
         if not self.cap.isOpened():
             raise RuntimeError("Errore: impossibile aprire la webcam principale.")
 
-        # ---- TERTIARY: Face Detector ----
+        # ---- riconoscimento volto ----
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # ---- TERTIARY: Main Video Display Label ----
+        # ---- Label del video principale ----
         self.video_label = QLabel(alignment=Qt.AlignCenter)
         self.video_label.setObjectName("video_label")
         self.video_label.setMinimumSize(0, 0)
@@ -99,14 +104,14 @@ class FaceApp(QWidget):
             alignment=Qt.AlignCenter
         )
 
-        # ---- TERTIARY: Main Timer for Frame Updates ----
+        # ---- timer per aggiornamento frame ----
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.running = False
         self.prev_time = time.time()
         self.fps = 0
 
-        # ---- TERTIARY: Extra Cameras (placeholder) ----
+        # ---- webcam extra ----
         self.extra_caps = []
         self.extra_cam_widgets = []
         self.extra_timer = QTimer()
@@ -114,9 +119,9 @@ class FaceApp(QWidget):
         self.extra_timer.start(200)
 
         # ============================================================================================
-        # SECONDARY SECTION: UI SETUP - Settings Sidebar (Scrollable + Toggle Button)
+        # BARRA LATERALE DI CONTROLLO, CON TUTTE LE IMPOSTAZIONI E STATISTICHE
         # ============================================================================================
-        # Create scrollable settings area (without toggle button)
+        # barra laterale scrollabile con tutte le impostazioni e statistiche
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
@@ -132,7 +137,7 @@ class FaceApp(QWidget):
         scroll_area.setWidget(settings_container)
         self.scroll_area = scroll_area
 
-        # Create sidebar container with toggle button (always visible) + scroll area
+        # barra laterale con pulsante di toggle
         sidebar_layout = QVBoxLayout()
         self.toggle_sidebar_button = QPushButton("Nascondi impostazioni")
         self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
@@ -145,7 +150,7 @@ class FaceApp(QWidget):
         self.sidebar_widget = sidebar_widget
 
         # ============================================================================================
-        # SECONDARY SECTION: MAIN LAYOUT
+        # LAYOUT PRINCIPALE: sidebar a sinistra e video a destra
         # ============================================================================================
         video_layout = QVBoxLayout()
         video_layout.addWidget(self.cam_name_label)
@@ -157,7 +162,7 @@ class FaceApp(QWidget):
 
 
     # ============================================================================================
-    # SECONDARY SECTION: STATISTICS MANAGEMENT
+    # GESTIONE DELLE STATISTICHE DI UTILIZZO, CON CARICAMENTO E SALVATAGGIO SU FILE JSON
     # ============================================================================================
     def load_stats(self):
         """Load statistics from JSON file."""
@@ -190,7 +195,7 @@ class FaceApp(QWidget):
             pass
 
     # ============================================================================================
-    # SECONDARY SECTION: WEBCAM SCANNING
+    # RILEVAMENTO DELLE WEBCAM DISPONIBILI SUL SISTEMA
     # ============================================================================================
     def scan_webcams(self):
         """Scan for available webcams."""
@@ -207,27 +212,27 @@ class FaceApp(QWidget):
         return indices, names
 
     # ============================================================================================
-    # SECONDARY SECTION: UI GROUP BOXES CREATION
+    # CREAZIONE DEI GRUPPI PER LA WEBCAM, RILEVAMENTO VOLTI, FEEDBACK E PERCORSO DI SALVATAGGIO
     # ============================================================================================
     def create_webcam_group(self):
         """Create webcam control group."""
         group = QGroupBox("Webcam")
         layout = QVBoxLayout()
 
-        # TERTIARY: Camera Selector Combo
+        # selettore di webcam
         self.cam_selector = QComboBox()
         for name in self.available_names:
             self.cam_selector.addItem(name)
         self.cam_selector.currentIndexChanged.connect(self.change_camera)
         layout.addWidget(self.cam_selector)
 
-        # TERTIARY: Start/Stop Camera Button
+        # bottone di avvio/stop camera
         self.start_button = QPushButton("Start Camera")
         self.start_button.clicked.connect(self.toggle_camera)
         self.start_button.setStyleSheet("background-color: green; color: white;")
         layout.addWidget(self.start_button)
 
-        # TERTIARY: Record Button
+        # bottone di avvio/stop registrazione
         self.record_button = QPushButton("Start Recording")
         self.record_button.clicked.connect(self.toggle_recording)
         self.record_button.setStyleSheet("background-color: #173c68; color: white;")
@@ -241,12 +246,12 @@ class FaceApp(QWidget):
         group = QGroupBox("Rilevamento Volti")
         layout = QVBoxLayout()
 
-        # TERTIARY: Color Picker Button
+        #  bottone per scegliere il colore del rettangolo di rilevamento
         self.color_button = QPushButton("Colore rettangolo")
         self.color_button.clicked.connect(self.choose_color)
         layout.addWidget(self.color_button)
 
-        # TERTIARY: Rectangle Thickness Slider
+        # TERTIARY: larghezza del rettangolo di rilevamento
         layout.addWidget(QLabel("Spessore rettangolo"))
         self.thickness_slider = QSlider(Qt.Horizontal)
         self.thickness_slider.setRange(1, 10)
@@ -254,7 +259,7 @@ class FaceApp(QWidget):
         self.thickness_slider.valueChanged.connect(self.update_thickness)
         layout.addWidget(self.thickness_slider)
 
-        # TERTIARY: Zoom Slider
+        # Zoom Slider
         layout.addWidget(QLabel("Zoom"))
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(10, 200)
@@ -270,23 +275,28 @@ class FaceApp(QWidget):
         group = QGroupBox("Feedback")
         layout = QVBoxLayout()
 
-        # TERTIARY: Show Coordinates Checkbox
+        # TERTIARY: checkbox mostra coordinate
         self.coords_check = QCheckBox("Mostra coordinate")
         self.coords_check.toggled.connect(self.toggle_coords)
         layout.addWidget(self.coords_check)
 
-        # TERTIARY: Show FPS Checkbox
+        # checkbox mostra FPS
         self.fps_check = QCheckBox("Mostra FPS")
         self.fps_check.setChecked(self.show_fps)
         self.fps_check.toggled.connect(self.toggle_fps)
         layout.addWidget(self.fps_check)
 
-        # TERTIARY: Snapshot Button
+        # ---- filtro bianco e nero ----
+        self.gray_button = QPushButton("Filtro bianco e nero: OFF")
+        self.gray_button.clicked.connect(self.toggle_gray_filter)
+        layout.addWidget(self.gray_button)
+
+        # bottone per salvare snapshot
         self.snapshot_button = QPushButton("Salva snapshot")
         self.snapshot_button.clicked.connect(self.save_snapshot)
         layout.addWidget(self.snapshot_button)
 
-        # TERTIARY: Statistics Labels
+        # label per statistiche foto e video
         self.photo_label = QLabel(f"Foto scattate: {self.photo_count}")
         layout.addWidget(self.photo_label)
 
@@ -318,7 +328,7 @@ class FaceApp(QWidget):
         return group
 
     # ============================================================================================
-    # SECONDARY SECTION: ACTION HANDLERS
+    # AZIONI PER I CONTROLLI
     # ============================================================================================
     def change_save_path(self):
         """Change the save path for photos and videos."""
@@ -395,8 +405,20 @@ class FaceApp(QWidget):
             self.start_button.setStyleSheet("background-color: red; color: white;")
         self.running = not self.running
 
+    def toggle_gray_filter(self):
+        """Toggle grayscale filter on/off."""
+        self.gray_filter = not self.gray_filter
+
+        if self.gray_filter:
+            self.gray_button.setText("Filtro bianco e nero: ON")
+            self.gray_button.setStyleSheet("background-color: #444444; color: white;")
+        else:
+            self.gray_button.setText("Filtro bianco e nero: OFF")
+            self.gray_button.setStyleSheet("")
+
+
     # ============================================================================================
-    # SECONDARY SECTION: RECORDING VIDEO
+    # REGISTRAZIONE VIDEO, con salvataggio del file
     # ============================================================================================
     def toggle_recording(self):
         """Start or stop video recording."""
@@ -405,7 +427,7 @@ class FaceApp(QWidget):
             return
 
         if self.recording:
-            # ---- TERTIARY: Stop Recording ----
+            # ---- stoppa la registrazione ----
             self.recording = False
             self.record_button.setText("Start Recording")
             self.record_button.setStyleSheet("background-color: #173c68; color: white;")
@@ -420,7 +442,7 @@ class FaceApp(QWidget):
             QMessageBox.information(self, "Registrazione", "Video salvato con successo!")
 
         else:
-            # ---- TERTIARY: Start Recording ----
+            # ---- inizia la registrazione ----
             filename = datetime.datetime.now().strftime("record_%Y%m%d_%H%M%S.mp4")
             full_path = os.path.join(self.save_path, filename)
 
@@ -444,10 +466,10 @@ class FaceApp(QWidget):
             self.save_stats()
 
     # ============================================================================================
-    # SECONDARY SECTION: SNAPSHOT
+    # SNAPSHOT, con salvataggio dell'immagine e aggiornamento delle statistiche
     # ============================================================================================
     def save_snapshot(self):
-        """Capture and save a snapshot from the camera."""
+        """Capture and save a grayscale snapshot from the camera."""
         ret, frame = self.cap.read()
         if not ret:
             QMessageBox.warning(self, "Errore", "Impossibile catturare l'immagine.")
@@ -455,10 +477,13 @@ class FaceApp(QWidget):
 
         frame = cv2.flip(frame, 1)
 
+        # Conversione in bianco e nero
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
         filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
         full_path = os.path.join(self.save_path, filename)
 
-        cv2.imwrite(full_path, frame)
+        cv2.imwrite(full_path, gray)
 
         self.photo_count += 1
         self.last_photo = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -467,10 +492,11 @@ class FaceApp(QWidget):
         self.last_photo_label.setText(f"Ultima foto: {self.last_photo}")
 
         self.save_stats()
-        QMessageBox.information(self, "Snapshot", "Foto salvata con successo!")
+        QMessageBox.information(self, "Snapshot", "Foto in bianco e nero salvata con successo!")
+
 
     # ============================================================================================
-    # SECONDARY SECTION: FRAME UPDATE - Main Video Processing Loop
+    # LOOP PRINCIPALE DI ACQUISIZIONE
     # ============================================================================================
     def update_frame(self):
         """Capture frame, process, and display on label."""
@@ -480,7 +506,13 @@ class FaceApp(QWidget):
 
         frame = cv2.flip(frame, 1)
 
-        # ---- TERTIARY: Digital Zoom ----
+        # ---- filtro bianco e nero ----
+        if self.gray_filter:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+
+        # ---- zoom digitale ----
         if self.zoom_factor > 1.0:
             h, w = frame.shape[:2]
             new_w = int(w / self.zoom_factor)
@@ -490,7 +522,7 @@ class FaceApp(QWidget):
             frame = frame[y1:y1+new_h, x1:x1+new_w]
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
-        # ---- TERTIARY: Face Detection ----
+        # ---- rilavazione volto ----
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6)
         for (x, y, w, h) in faces:
@@ -505,7 +537,7 @@ class FaceApp(QWidget):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
                 )
 
-        # ---- TERTIARY: FPS Display ----
+        # ---- mostra FPS ----
         now = time.time()
         self.fps = 1.0 / max(now - self.prev_time, 0.0001)
         self.prev_time = now
@@ -516,7 +548,7 @@ class FaceApp(QWidget):
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2
             )
 
-        # ---- TERTIARY: Date and Time Info ----
+        # ---- informazioni data ----
         font = cv2.FONT_HERSHEY_SIMPLEX
         date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         
@@ -526,15 +558,15 @@ class FaceApp(QWidget):
             font, 0.6, (200, 200, 200), 2
         )
 
-        # ---- TERTIARY: Recording Display with Location ----
+        # ---- mostra registrazione con tempo e luogo ----
         if self.recording and self.video_writer:
             elapsed = int(time.time() - self.record_start_time)
             timer_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
             
-            # Red recording circle
+            # cerchio di registraizone rosso
             cv2.circle(frame, (20, 60), 10, (0, 0, 255), -1)
             
-            # REC text
+            # testo "REC" accanto al cerchio
             cv2.putText(
                 frame, "REC", (40, 65),
                 font, 0.7, (0, 0, 255), 2
@@ -546,7 +578,7 @@ class FaceApp(QWidget):
                 font, 0.8, (255, 255, 255), 2
             )
             
-            # Location next to timer
+            # posizione del luogo a destra del timer, con calcolo dinamico della posizione in base alla lunghezza del timer
             (tx_w, tx_h), _ = cv2.getTextSize(timer_str, font, 0.8, 2)
             loc_x = 100 + tx_w + 12
             loc_y = 65
@@ -555,16 +587,19 @@ class FaceApp(QWidget):
                 font, 0.6, (200, 200, 200), 2
             )
             
-            # Write frame to video file
+            # salva il frame nel video
             self.video_writer.write(frame)
         else:
-            # Show location above date when not recording
+            # se non stiamo registrando, mostra comunque la posizione in basso a sinistra
             cv2.putText(
                 frame, self.location, (10, frame.shape[0]-40),
                 font, 0.6, (200, 200, 200), 2
             )
 
-        # ---- TERTIARY: Convert and Display Frame ----
+        # ---- Convert and Display Frame ----
+        # salva ultimo frame visualizzato (BGR)
+        self.last_frame = frame.copy()
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
@@ -576,14 +611,14 @@ class FaceApp(QWidget):
         self.video_label.setPixmap(pixmap)
 
     # ============================================================================================
-    # SECONDARY SECTION: EXTRA CAMERAS (Placeholder)
+    # CAMERA EXTRA (placeholder per future implementazioni di feed multipli)
     # ============================================================================================
     def update_extra_cams(self):
         """Update extra camera feeds (placeholder)."""
         pass
 
     # ============================================================================================
-    # SECONDARY SECTION: CLEANUP & EXIT
+    # CLEANUP DELLE RISORSE ALLA CHIUSURA DELL'APPLICAZIONE, PER EVITARE LOCK DI WEBCAM E FILE
     # ============================================================================================
     def closeEvent(self, event):
         """Clean up resources on application close."""
@@ -604,19 +639,19 @@ class FaceApp(QWidget):
 
 
 # ========================================================================================================================================================================================================================
-# PRIMARY SECTION: APPLICATION ENTRY POINT========================================================================================================================================================================================
+# PUNTO DI INGRESSO DELL'APP ========================================================================================================================================================================================
 # ========================================================================================================================================================================================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    # Try to load stylesheet if available
+    # carica il file di stile QSS se presente, per migliorare l'aspetto dell'applicazione
     try:
         with open("style.qss", "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
         pass
 
-    # Create and show main window
+    # crea e mostra la finestra principale dell'applicazione
     window = FaceApp()
     window.show()
 
