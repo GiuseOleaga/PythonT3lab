@@ -1,5 +1,7 @@
 {
     "photos": 9,
-    "videos": 10,
+    "videos": 16,
+    "last_photo": "Nessuna",
+    "last_video": "10/02/2026 10:52:12",
     "save_path": "C:/Users/Giuseppe/OneDrive/Desktop"
 }

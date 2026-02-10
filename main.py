@@ -51,6 +51,16 @@ class FaceApp(QWidget):
         self.zoom_factor = 1.0
         self.last_frame = None
         
+        # ---------------- MOTION DETECTION ----------------
+        self.motion_enabled = True
+        self.prev_gray = None
+        self.motion_threshold = 5000   # sensibilità (più basso = più sensibile)
+        self.motion_last_seen = time.time()
+        self.motion_grace_seconds = 3  # secondi senza movimento prima di fermare il video
+        self.motion_recording_active = False
+
+        
+
         # ---- filtri video ----
         self.gray_filter = False
 
@@ -251,6 +261,14 @@ class FaceApp(QWidget):
         self.color_button.clicked.connect(self.choose_color)
         layout.addWidget(self.color_button)
 
+        # ---- motion detection toggle ----
+        self.motion_button = QPushButton("Motion Recording")
+        self.motion_button.setCheckable(True)
+        self.motion_button.setChecked(True)
+        self.motion_button.toggled.connect(self.toggle_motion_button)
+        layout.addWidget(self.motion_button)
+
+
         # TERTIARY: larghezza del rettangolo di rilevamento
         layout.addWidget(QLabel("Spessore rettangolo"))
         self.thickness_slider = QSlider(Qt.Horizontal)
@@ -416,6 +434,15 @@ class FaceApp(QWidget):
             self.gray_button.setText("Filtro bianco e nero: OFF")
             self.gray_button.setStyleSheet("")
 
+    def toggle_motion_button(self, checked):
+        """Toggle motion detection on/off."""
+        self.motion_enabled = checked
+        if checked:
+            self.motion_button.setStyleSheet("background-color: #28a745; color: white;")
+        else:
+            self.motion_button.setStyleSheet("")
+            self.prev_gray = None  # reset motion detection
+
 
     # ============================================================================================
     # REGISTRAZIONE VIDEO, con salvataggio del file
@@ -522,6 +549,42 @@ class FaceApp(QWidget):
             frame = frame[y1:y1+new_h, x1:x1+new_w]
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
+        # ============================================================================================
+        # MOTION DETECTION LOGIC (AUTO RECORDING)
+        # ============================================================================================
+        if self.motion_enabled:
+            # Convert to grayscale for motion detection
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            if self.prev_gray is None:
+                self.prev_gray = gray
+            else:
+                # Calculate difference between frames
+                delta = cv2.absdiff(self.prev_gray, gray)
+                thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
+                motion_pixels = cv2.countNonZero(thresh)
+
+                # Motion detected
+                if motion_pixels > self.motion_threshold:
+                    self.motion_last_seen = time.time()
+
+                    # Start recording ONLY if not already recording
+                    if not self.recording:
+                        self.toggle_recording()
+                        self.motion_recording_active = True
+
+                # No motion detected for X seconds
+                else:
+                    if (
+                        self.motion_recording_active
+                        and self.recording
+                        and time.time() - self.motion_last_seen > self.motion_grace_seconds
+                    ):
+                        self.toggle_recording()
+                        self.motion_recording_active = False
+
+                self.prev_gray = gray
+        
         # ---- rilavazione volto ----
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = self.detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6)
