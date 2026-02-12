@@ -12,5 +12,5 @@ while True:
      if cv.waitKey(1) == ord('x'):
         break
 
-cv.release()
+cap.release()
 cv.destroyAllWindows()

@@ -12,6 +12,9 @@ import cv2
 import time
 import datetime
 import geocoder
+import logging
+
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
@@ -20,6 +23,25 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap, QColor
+
+# ========================================================================================================================================================================================================================
+# CONFIGURAZIONE LOGGING
+# ========================================================================================================================================================================================================================
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "faceapp_access.log")
+
+Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    encoding='utf-8',
+    filemode='a'
+)
+
+logger = logging.getLogger("FaceApp")
 
 # ========================================================================================================================================================================================================================
 # PRIMARY SECTION: CONSTANTS========================================================================================================================================================================================
@@ -59,16 +81,17 @@ class FaceApp(QWidget):
         self.motion_grace_seconds = 3  # secondi senza movimento prima di fermare il video
         self.motion_recording_active = False
 
-        
-
         # ---- filtri video ----
         self.gray_filter = False
-
 
         # ---- stato di registrazione ----
         self.recording = False
         self.video_writer = None
         self.record_start_time = None
+
+        # ---- variabili per logging volti durante registrazione ----
+        self.recording_start_time = None
+        self.faces_during_recording = 0
 
         # ---- statisctiche ----
         self.photo_count = 0
@@ -79,13 +102,15 @@ class FaceApp(QWidget):
         self.load_stats()
 
         # ---- geolocalizzazione ----
+        self.location = "Località sconosciuta"
         try:
             g = geocoder.ip("me")
-            city = g.city if g.city else "Località sconosciuta"
-            country = g.country if g.country else ""
-            self.location = f"{city}, {country}".strip(", ")
+            if g.city or g.country:
+                city = g.city or ""
+                country = g.country or ""
+                self.location = f"{city}, {country}".strip(", ")
         except Exception:
-            self.location = "Località sconosciuta"
+            pass  # Keep default location on any error
 
         # ---- inizzializzazione webcam ----
         self.available_indices, self.available_names = self.scan_webcams()
@@ -94,8 +119,12 @@ class FaceApp(QWidget):
         
         self.current_cam_index = self.available_indices[0]
         self.current_cam_name = self.available_names[0]
-        self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
-        if not self.cap.isOpened():
+        try:
+            self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
+            if not self.cap.isOpened():
+                raise RuntimeError("Errore: impossibile aprire la webcam principale.")
+        except Exception as e:
+            logger.error(f"Camera initialization failed: {e}")
             raise RuntimeError("Errore: impossibile aprire la webcam principale.")
 
         # ---- riconoscimento volto ----
@@ -186,8 +215,8 @@ class FaceApp(QWidget):
             self.last_photo = data.get("last_photo", "Nessuna")
             self.last_video = data.get("last_video", "Nessuno")
             self.save_path = data.get("save_path", os.getcwd())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load stats: {e}")
 
     def save_stats(self):
         """Save statistics to JSON file."""
@@ -201,24 +230,31 @@ class FaceApp(QWidget):
         try:
             with open(STATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
-        except Exception:
-            pass
+        except IOError as e:
+            logger.warning(f"Failed to save stats: {e}")
 
     # ============================================================================================
     # RILEVAMENTO DELLE WEBCAM DISPONIBILI SUL SISTEMA
     # ============================================================================================
     def scan_webcams(self):
-        """Scan for available webcams."""
+        """Scan for available webcams with timeout."""
         indices = []
         names = []
         for i in range(10):
-            cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
-            if cap.isOpened():
-                indices.append(i)
-                names.append(f"Webcam {i}")
-                cap.release()
-            else:
-                cap.release()
+            try:
+                cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
+                if cap.isOpened():
+                    # Verify it's actually a working camera
+                    ret, _ = cap.read()
+                    if ret:
+                        indices.append(i)
+                        names.append(f"Webcam {i}")
+                    cap.release()
+                else:
+                    cap.release()
+            except Exception as e:
+                logger.debug(f"Error scanning camera {i}: {e}")
+                continue
         return indices, names
 
     # ============================================================================================
@@ -438,14 +474,16 @@ class FaceApp(QWidget):
         """Toggle motion detection on/off."""
         self.motion_enabled = checked
         if checked:
+            self.motion_button.setText("Motion Recording: ON")
             self.motion_button.setStyleSheet("background-color: #28a745; color: white;")
         else:
-            self.motion_button.setStyleSheet("")
+            self.motion_button.setText("Motion Recording: OFF")
+            self.motion_button.setStyleSheet("background-color: #6c757d; color: white;")
             self.prev_gray = None  # reset motion detection
 
 
     # ============================================================================================
-    # REGISTRAZIONE VIDEO, con salvataggio del file
+    # REGISTRAZIONE VIDEO, con salvataggio del file + LOGGING
     # ============================================================================================
     def toggle_recording(self):
         """Start or stop video recording."""
@@ -463,10 +501,29 @@ class FaceApp(QWidget):
                 self.video_writer.release()
                 self.video_writer = None
 
+            # Calcolo durata per il log
+            if self.recording_start_time:
+                duration_sec = int(time.time() - self.recording_start_time)
+                duration_str = time.strftime("%H:%M:%S", time.gmtime(duration_sec))
+            else:
+                duration_str = "??:??:??"
+
+            # LOG DI CHIUSURA
+            logger.info(
+                "Registrazione TERMINATA | durata=%s | volti rilevati=%d | luogo=%s",
+                duration_str,
+                self.faces_during_recording,
+                self.location
+            )
+
             self.last_video = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             self.last_video_label.setText(f"Ultimo video: {self.last_video}")
             self.save_stats()
             QMessageBox.information(self, "Registrazione", "Video salvato con successo!")
+
+            # Reset per prossima registrazione
+            self.faces_during_recording = 0
+            self.recording_start_time = None
 
         else:
             # ---- inizia la registrazione ----
@@ -485,41 +542,55 @@ class FaceApp(QWidget):
                 return
 
             self.recording = True
+            self.recording_start_time = time.time()
             self.record_start_time = time.time()
+            self.faces_during_recording = 0
+
             self.video_count += 1
             self.video_label_widget.setText(f"Video registrati: {self.video_count}")
             self.record_button.setText("Stop Recording")
             self.record_button.setStyleSheet("background-color: red; color: white;")
             self.save_stats()
 
+            # LOG DI INIZIO
+            logger.info(
+                "Registrazione INIZIATA | file=%s | luogo=%s",
+                filename,
+                self.location
+            )
+
+
     # ============================================================================================
     # SNAPSHOT, con salvataggio dell'immagine e aggiornamento delle statistiche
     # ============================================================================================
     def save_snapshot(self):
         """Capture and save a grayscale snapshot from the camera."""
-        ret, frame = self.cap.read()
-        if not ret:
-            QMessageBox.warning(self, "Errore", "Impossibile catturare l'immagine.")
-            return
+        try:
+            ret, frame = self.cap.read()
+            if not ret:
+                QMessageBox.warning(self, "Errore", "Impossibile catturare l'immagine.")
+                return
 
-        frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, 1)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Conversione in bianco e nero
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
+            full_path = os.path.join(self.save_path, filename)
 
-        filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
-        full_path = os.path.join(self.save_path, filename)
+            success = cv2.imwrite(full_path, gray)
+            if not success:
+                QMessageBox.warning(self, "Errore", "Impossibile salvare la foto.")
+                return
 
-        cv2.imwrite(full_path, gray)
-
-        self.photo_count += 1
-        self.last_photo = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-
-        self.photo_label.setText(f"Foto scattate: {self.photo_count}")
-        self.last_photo_label.setText(f"Ultima foto: {self.last_photo}")
-
-        self.save_stats()
-        QMessageBox.information(self, "Snapshot", "Foto in bianco e nero salvata con successo!")
+            self.photo_count += 1
+            self.last_photo = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            self.photo_label.setText(f"Foto scattate: {self.photo_count}")
+            self.last_photo_label.setText(f"Ultima foto: {self.last_photo}")
+            self.save_stats()
+            QMessageBox.information(self, "Snapshot", "Foto in bianco e nero salvata con successo!")
+        except Exception as e:
+            logger.error(f"Error saving snapshot: {e}")
+            QMessageBox.warning(self, "Errore", f"Errore nel salvataggio: {e}")
 
 
     # ============================================================================================
@@ -532,12 +603,13 @@ class FaceApp(QWidget):
             return
 
         frame = cv2.flip(frame, 1)
+        
+        # Convert to grayscale once - reuse for motion detection and face detection
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # ---- filtro bianco e nero ----
         if self.gray_filter:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-
+            frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
         # ---- zoom digitale ----
         if self.zoom_factor > 1.0:
@@ -548,16 +620,14 @@ class FaceApp(QWidget):
             y1 = (h - new_h) // 2
             frame = frame[y1:y1+new_h, x1:x1+new_w]
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # ============================================================================================
         # MOTION DETECTION LOGIC (AUTO RECORDING)
         # ============================================================================================
         if self.motion_enabled:
-            # Convert to grayscale for motion detection
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
             if self.prev_gray is None:
-                self.prev_gray = gray
+                self.prev_gray = gray.copy()
             else:
                 # Calculate difference between frames
                 delta = cv2.absdiff(self.prev_gray, gray)
@@ -583,11 +653,16 @@ class FaceApp(QWidget):
                         self.toggle_recording()
                         self.motion_recording_active = False
 
-                self.prev_gray = gray
+                self.prev_gray = gray.copy()
         
-        # ---- rilavazione volto ----
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # ---- rilevazione volti ----
         faces = self.detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6)
+
+        # Conteggio volti SOLO durante la registrazione (una volta per frame, non per ogni volto)
+        if self.recording and len(faces) > 0:
+            self.faces_during_recording += 1
+
+        # Disegna rettangoli attorno ai volti
         for (x, y, w, h) in faces:
             cv2.rectangle(
                 frame, (x, y), (x+w, y+h),
@@ -614,8 +689,6 @@ class FaceApp(QWidget):
         # ---- informazioni data ----
         font = cv2.FONT_HERSHEY_SIMPLEX
         date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        
-        # Display date/time at bottom
         cv2.putText(
             frame, date_str, (10, frame.shape[0]-10),
             font, 0.6, (200, 200, 200), 2
@@ -626,41 +699,26 @@ class FaceApp(QWidget):
             elapsed = int(time.time() - self.record_start_time)
             timer_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
             
-            # cerchio di registraizone rosso
+            # cerchio di registrazione rosso
             cv2.circle(frame, (20, 60), 10, (0, 0, 255), -1)
+            cv2.putText(frame, "REC", (40, 65), font, 0.7, (0, 0, 255), 2)
+            cv2.putText(frame, timer_str, (100, 65), font, 0.8, (255, 255, 255), 2)
             
-            # testo "REC" accanto al cerchio
-            cv2.putText(
-                frame, "REC", (40, 65),
-                font, 0.7, (0, 0, 255), 2
-            )
-            
-            # Timer
-            cv2.putText(
-                frame, timer_str, (100, 65),
-                font, 0.8, (255, 255, 255), 2
-            )
-            
-            # posizione del luogo a destra del timer, con calcolo dinamico della posizione in base alla lunghezza del timer
+            # posizione del luogo a destra del timer
             (tx_w, tx_h), _ = cv2.getTextSize(timer_str, font, 0.8, 2)
             loc_x = 100 + tx_w + 12
-            loc_y = 65
-            cv2.putText(
-                frame, self.location, (loc_x, loc_y),
-                font, 0.6, (200, 200, 200), 2
-            )
+            cv2.putText(frame, self.location, (loc_x, 65), font, 0.6, (200, 200, 200), 2)
             
             # salva il frame nel video
             self.video_writer.write(frame)
         else:
-            # se non stiamo registrando, mostra comunque la posizione in basso a sinistra
+            # se non stiamo registrando, mostra comunque la posizione
             cv2.putText(
                 frame, self.location, (10, frame.shape[0]-40),
                 font, 0.6, (200, 200, 200), 2
             )
 
         # ---- Convert and Display Frame ----
-        # salva ultimo frame visualizzato (BGR)
         self.last_frame = frame.copy()
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
