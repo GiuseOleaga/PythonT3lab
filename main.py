@@ -1,12 +1,12 @@
-# ====================================================================================================================================================================================================================================
-# APPLICAZIONE DI ACCESSO BIOMETRICO - Face Detection & Recording System ====================================================================================================================================================
-# ====================================================================================================================================================================================================================================
+# =============================================================================================
+# APPLICAZIONE DI ACCESSO BIOMETRICO - Face Detection & Recording System ======================
+# =============================================================================================
 
-# ========================================================================================================================================================================================================================
-# PRIMARY SECTION: IMPORTS ========================================================================================================================================================================================
-# ========================================================================================================================================================================================================================
-import sys
+# =============================================================================================
+# PRIMARY SECTION: IMPORTS ====================================================================
+# =============================================================================================
 import os
+import sys
 import json
 import cv2
 import time
@@ -24,13 +24,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap, QColor
 
-# ========================================================================================================================================================================================================================
+# =============================================================================================
 # CONFIGURAZIONE LOGGING
-# ========================================================================================================================================================================================================================
-LOG_DIR = "logs"
-LOG_FILE = os.path.join(LOG_DIR, "faceapp_access.log")
+# =============================================================================================
+LOG_FILE = os.path.join("logs", "faceapp_logging.log")
 
-Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
+Path("logs").mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -91,7 +90,7 @@ class FaceApp(QWidget):
 
         # ---- variabili per logging volti durante registrazione ----
         self.recording_start_time = None
-        self.faces_during_recording = 0
+        self.face_detection_counter = 0  # counts frames where faces were detected
 
         # ---- statisctiche ----
         self.photo_count = 0
@@ -510,9 +509,9 @@ class FaceApp(QWidget):
 
             # LOG DI CHIUSURA
             logger.info(
-                "Registrazione TERMINATA | durata=%s | volti rilevati=%d | luogo=%s",
+                "Registrazione TERMINATA | durata=%s | frame con volti=%d | luogo=%s",
                 duration_str,
-                self.faces_during_recording,
+                self.face_detection_counter,
                 self.location
             )
 
@@ -522,7 +521,7 @@ class FaceApp(QWidget):
             QMessageBox.information(self, "Registrazione", "Video salvato con successo!")
 
             # Reset per prossima registrazione
-            self.faces_during_recording = 0
+            self.face_detection_counter = 0
             self.recording_start_time = None
 
         else:
@@ -544,7 +543,7 @@ class FaceApp(QWidget):
             self.recording = True
             self.recording_start_time = time.time()
             self.record_start_time = time.time()
-            self.faces_during_recording = 0
+            self.face_detection_counter = 0
 
             self.video_count += 1
             self.video_label_widget.setText(f"Video registrati: {self.video_count}")
@@ -656,11 +655,11 @@ class FaceApp(QWidget):
                 self.prev_gray = gray.copy()
         
         # ---- rilevazione volti ----
-        faces = self.detector.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6)
+        faces = self.detector.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5, minSize=(40, 40))
 
-        # Conteggio volti SOLO durante la registrazione (una volta per frame, non per ogni volto)
+        # Conta i frame dove sono stati rilevati volti (non il numero totale di volti)
         if self.recording and len(faces) > 0:
-            self.faces_during_recording += 1
+            self.face_detection_counter += 1
 
         # Disegna rettangoli attorno ai volti
         for (x, y, w, h) in faces:
