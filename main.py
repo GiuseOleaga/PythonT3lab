@@ -163,6 +163,7 @@ class FaceApp(QWidget):
         # ---- frame counter and YOLO detection ----
         self.frame_counter = 0
         self.yolo_enabled = True
+        self.yolo_results_cache = []  # Cache last YOLO results
 
         # ---- webcam extra ----
         self.extra_caps = []
@@ -536,6 +537,7 @@ class FaceApp(QWidget):
         else:
             self.yolo_button.setText("Rilevamento YOLO: OFF")
             self.yolo_button.setStyleSheet("background-color: #6c757d; color: white;")
+            self.yolo_results_cache = []  # Clear cache when disabled
 
     def choose_yolo_color(self):
         """Open color dialog for YOLO box color."""
@@ -741,33 +743,44 @@ class FaceApp(QWidget):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
                 )
 
-        # ---- YOLO Object Detection (only if enabled and at reduced frequency) ----
+        # ---- YOLO Object Detection (every 3 frames for performance) ----
         self.frame_counter += 1
-        if self.yolo_enabled and self.frame_counter % YOLO_DETECTION_INTERVAL == 0:
-            # Run YOLO on a smaller frame for performance
-            small_frame = cv2.resize(frame, (640, 480))
-            results = self.yolo_model(small_frame, verbose=False)
-            
-            # Scale factors to map detections back to original frame
-            scale_x = frame.shape[1] / 640.0
-            scale_y = frame.shape[0] / 480.0
-            
-            for r in results:
-                for box in r.boxes:
-                    cls = int(box.cls[0])
-                    conf = box.conf[0]
-                    if conf > 0.5:  # Soglia di confidenza
+        if self.yolo_enabled:
+            if self.frame_counter % 3 == 0:
+                # Run YOLO on optimized resolution (960x720) for balance between accuracy and speed
+                h_orig, w_orig = frame.shape[:2]
+                small_frame = cv2.resize(frame, (960, 720))
+                results = self.yolo_model(small_frame, verbose=False, conf=0.45)
+                
+                # Scale factors to map detections back to original frame
+                scale_x = w_orig / 960.0
+                scale_y = h_orig / 720.0
+                
+                # Cache the results
+                self.yolo_results_cache = []
+                for r in results:
+                    for box in r.boxes:
+                        cls = int(box.cls[0])
+                        conf = box.conf[0]
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         # Scale coordinates back to original frame
-                        x1, y1, x2, y2 = int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), 
-                                    (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()),
-                                    self.yolo_rect_thickness)
-                        # Add label with class name and confidence
-                        label = f"{r.names[cls]} {conf:.2f}"
-                        cv2.putText(frame, label, (x1, y1 - 10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
-                                   (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()), 2)
+                        x1 = int(x1 * scale_x)
+                        y1 = int(y1 * scale_y)
+                        x2 = int(x2 * scale_x)
+                        y2 = int(y2 * scale_y)
+                        self.yolo_results_cache.append({
+                            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+                            'label': f"{r.names[cls]} {conf:.2f}"
+                        })
+            
+            # Draw cached results on all frames
+            for detection in self.yolo_results_cache:
+                cv2.rectangle(frame, (detection['x1'], detection['y1']), (detection['x2'], detection['y2']), 
+                            (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()),
+                            self.yolo_rect_thickness)
+                cv2.putText(frame, detection['label'], (detection['x1'], detection['y1'] - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
+                           (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()), 2)
 
         # ---- mostra FPS ----
         now = time.time()
