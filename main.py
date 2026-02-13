@@ -13,8 +13,11 @@ import time
 import datetime
 import geocoder
 import logging
+import contextlib
+import numpy as np
 
 from pathlib import Path
+from ultralytics import YOLO
 
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
@@ -46,6 +49,7 @@ logger = logging.getLogger("FaceApp")
 # PRIMARY SECTION: CONSTANTS========================================================================================================================================================================================
 # ========================================================================================================================================================================================================================
 STATS_FILE = "stats.json"
+YOLO_DETECTION_INTERVAL = 15       # run YOLO every N frames for performance
 
 
 # ========================================================================================================================================================================================================================
@@ -71,6 +75,10 @@ class FaceApp(QWidget):
         self.show_fps = True
         self.zoom_factor = 1.0
         self.last_frame = None
+        
+        # ---- YOLO object detector parameters ----
+        self.yolo_rect_color = QColor(0, 255, 0)  # green
+        self.yolo_rect_thickness = 2
         
         # ---------------- MOTION DETECTION ----------------
         self.motion_enabled = True
@@ -131,6 +139,9 @@ class FaceApp(QWidget):
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
+        # ---- YOLO model ----
+        self.yolo_model = YOLO("yolov8n.pt")
+
         # ---- Label del video principale ----
         self.video_label = QLabel(alignment=Qt.AlignCenter)
         self.video_label.setObjectName("video_label")
@@ -149,6 +160,10 @@ class FaceApp(QWidget):
         self.prev_time = time.time()
         self.fps = 0
 
+        # ---- frame counter and YOLO detection ----
+        self.frame_counter = 0
+        self.yolo_enabled = True
+
         # ---- webcam extra ----
         self.extra_caps = []
         self.extra_cam_widgets = []
@@ -163,6 +178,7 @@ class FaceApp(QWidget):
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
+        settings_layout.addWidget(self.create_yolo_group())
         settings_layout.addWidget(self.create_feedback_group())
         settings_layout.addWidget(self.create_savepath_group())
         settings_layout.addStretch()
@@ -323,6 +339,38 @@ class FaceApp(QWidget):
         group.setLayout(layout)
         return group
 
+    def create_yolo_group(self):
+        """Create YOLO object detector control group."""
+        group = QGroupBox("Rilevamento Oggetti (YOLO)")
+        layout = QVBoxLayout()
+
+        # YOLO toggle button
+        self.yolo_button = QPushButton("Rilevamento YOLO: ON")
+        self.yolo_button.setCheckable(True)
+        self.yolo_button.setChecked(True)
+        self.yolo_button.setStyleSheet("background-color: #28a745; color: white;")
+        self.yolo_button.toggled.connect(self.toggle_yolo_button)
+        layout.addWidget(self.yolo_button)
+
+        # Label for YOLO detector
+        layout.addWidget(QLabel("Rilevatore: Neural Network (YOLOv8n)"))
+
+        # Color button for YOLO boxes
+        self.yolo_color_button = QPushButton("Colore box rilevamento")
+        self.yolo_color_button.clicked.connect(self.choose_yolo_color)
+        layout.addWidget(self.yolo_color_button)
+
+        # Thickness slider for YOLO boxes
+        layout.addWidget(QLabel("Spessore linea"))
+        self.yolo_thickness_slider = QSlider(Qt.Horizontal)
+        self.yolo_thickness_slider.setRange(1, 10)
+        self.yolo_thickness_slider.setValue(self.yolo_rect_thickness)
+        self.yolo_thickness_slider.valueChanged.connect(self.update_yolo_thickness)
+        layout.addWidget(self.yolo_thickness_slider)
+
+        group.setLayout(layout)
+        return group
+
     def create_feedback_group(self):
         """Create feedback and statistics group."""
         group = QGroupBox("Feedback")
@@ -385,8 +433,7 @@ class FaceApp(QWidget):
     # ============================================================================================
     def change_save_path(self):
         """Change the save path for photos and videos."""
-        folder = QFileDialog.getExistingDirectory(self, "Scegli cartella")
-        if folder:
+        if folder := QFileDialog.getExistingDirectory(self, "Scegli cartella"):
             self.save_path = folder
             self.path_label.setText(folder)
             self.save_stats()
@@ -479,6 +526,26 @@ class FaceApp(QWidget):
             self.motion_button.setText("Motion Recording: OFF")
             self.motion_button.setStyleSheet("background-color: #6c757d; color: white;")
             self.prev_gray = None  # reset motion detection
+
+    def toggle_yolo_button(self, checked):
+        """Toggle YOLO object detection on/off."""
+        self.yolo_enabled = checked
+        if checked:
+            self.yolo_button.setText("Rilevamento YOLO: ON")
+            self.yolo_button.setStyleSheet("background-color: #28a745; color: white;")
+        else:
+            self.yolo_button.setText("Rilevamento YOLO: OFF")
+            self.yolo_button.setStyleSheet("background-color: #6c757d; color: white;")
+
+    def choose_yolo_color(self):
+        """Open color dialog for YOLO box color."""
+        color = QColorDialog.getColor(self.yolo_rect_color, self, "Scegli colore box YOLO")
+        if color.isValid():
+            self.yolo_rect_color = color
+
+    def update_yolo_thickness(self, value):
+        """Update YOLO box thickness from slider."""
+        self.yolo_rect_thickness = value
 
 
     # ============================================================================================
@@ -674,6 +741,34 @@ class FaceApp(QWidget):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
                 )
 
+        # ---- YOLO Object Detection (only if enabled and at reduced frequency) ----
+        self.frame_counter += 1
+        if self.yolo_enabled and self.frame_counter % YOLO_DETECTION_INTERVAL == 0:
+            # Run YOLO on a smaller frame for performance
+            small_frame = cv2.resize(frame, (640, 480))
+            results = self.yolo_model(small_frame, verbose=False)
+            
+            # Scale factors to map detections back to original frame
+            scale_x = frame.shape[1] / 640.0
+            scale_y = frame.shape[0] / 480.0
+            
+            for r in results:
+                for box in r.boxes:
+                    cls = int(box.cls[0])
+                    conf = box.conf[0]
+                    if conf > 0.5:  # Soglia di confidenza
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        # Scale coordinates back to original frame
+                        x1, y1, x2, y2 = int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), 
+                                    (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()),
+                                    self.yolo_rect_thickness)
+                        # Add label with class name and confidence
+                        label = f"{r.names[cls]} {conf:.2f}"
+                        cv2.putText(frame, label, (x1, y1 - 10), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
+                                   (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()), 2)
+
         # ---- mostra FPS ----
         now = time.time()
         self.fps = 1.0 / max(now - self.prev_time, 0.0001)
@@ -765,11 +860,9 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
 
     # carica il file di stile QSS se presente, per migliorare l'aspetto dell'applicazione
-    try:
+    with contextlib.suppress(FileNotFoundError):
         with open("style.qss", "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
-    except FileNotFoundError:
-        pass
 
     # crea e mostra la finestra principale dell'applicazione
     window = FaceApp()
