@@ -1,9 +1,5 @@
 # =============================================================================================
-# APPLICAZIONE DI ACCESSO BIOMETRICO - Face Detection & Recording System ======================
-# =============================================================================================
-
-# =============================================================================================
-# PRIMARY SECTION: IMPORTS ====================================================================
+# APPLICAZIONE DI ACCESSO BIOMETRICO - Face Detection & Recording System con YOLO Object Detection
 # =============================================================================================
 import os
 import sys
@@ -13,27 +9,22 @@ import time
 import datetime
 import geocoder
 import logging
-import contextlib
-import numpy as np
-
 from pathlib import Path
-from ultralytics import YOLO
-
 from PySide6.QtWidgets import (
     QApplication, QLabel, QPushButton, QVBoxLayout, QWidget,
     QHBoxLayout, QGroupBox, QColorDialog, QCheckBox, QSlider,
-    QComboBox, QFileDialog, QMessageBox, QSizePolicy, QScrollArea
+    QComboBox, QFileDialog, QMessageBox, QSizePolicy, QScrollArea, QLineEdit
 )
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QImage, QPixmap, QColor
+from PySide6.QtGui import QImage, QPixmap, QColor, QMouseEvent
+import numpy as np
+from ultralytics import YOLO
 
 # =============================================================================================
 # CONFIGURAZIONE LOGGING
 # =============================================================================================
 LOG_FILE = os.path.join("logs", "faceapp_logging.log")
-
 Path("logs").mkdir(parents=True, exist_ok=True)
-
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
@@ -42,65 +33,67 @@ logging.basicConfig(
     encoding='utf-8',
     filemode='a'
 )
-
 logger = logging.getLogger("FaceApp")
 
-# ========================================================================================================================================================================================================================
-# PRIMARY SECTION: CONSTANTS========================================================================================================================================================================================
-# ========================================================================================================================================================================================================================
+# =============================================================================================
+# COSTANTI
+# =============================================================================================
 STATS_FILE = "stats.json"
-YOLO_DETECTION_INTERVAL = 15       # run YOLO every N frames for performance
+KNOWN_OBJECTS_DIR = Path("known_objects")
+KNOWN_OBJECTS_DIR.mkdir(exist_ok=True)
 
+RECOGNITION_INTERVAL = 8           # ogni quanti frame tentare riconoscimento
+MIN_GOOD_MATCHES = 15              # aumentato un po' perché usiamo frame intero
+MATCH_DISTANCE_THRESHOLD = 65
+MIN_SCORE = 0.28
 
-# ========================================================================================================================================================================================================================
-# APPLICAZIONE MAIN ========================================================================================================================================================================================
-# ========================================================================================================================================================================================================================
+# =============================================================================================
+# SUBCLASS PER QLabel CLICCABILE
+# =============================================================================================
+class ClickableLabel(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.LeftButton:
+            self.parent().handle_object_click(event.pos())
+
+# =============================================================================================
+# CLASSE PRINCIPALE
+# =============================================================================================
 class FaceApp(QWidget):
-
-    # ============================================================================================
-    # INIZZIALIZZAZIONE DELL'APPLICAZIONE, CON CONFIGURAZIONE DELLA FINESTRA
-    # ============================================================================================
     def __init__(self):
         super().__init__()
-        
-        # ---- configurazione della finestra principale ----
-        self.setWindowTitle("APPLICAZIONE DI ACCESSO BIOMETRICO")
+
+        self.setWindowTitle("APPLICAZIONE DI ACCESSO BIOMETRICO + YOLO Object Detection")
         self.resize(1100, 600)
         self.setMinimumSize(900, 500)
 
-        # ---- parametri base ----
+        # Parametri base disegno volti
         self.rect_color = QColor(0, 255, 0)
         self.rect_thickness = 2
         self.show_coords = False
         self.show_fps = True
         self.zoom_factor = 1.0
         self.last_frame = None
-        
-        # ---- YOLO object detector parameters ----
-        self.yolo_rect_color = QColor(0, 255, 0)  # green
-        self.yolo_rect_thickness = 2
-        
-        # ---------------- MOTION DETECTION ----------------
+
+        # Motion detection
         self.motion_enabled = True
         self.prev_gray = None
-        self.motion_threshold = 5000   # sensibilità (più basso = più sensibile)
+        self.motion_threshold = 5000
         self.motion_last_seen = time.time()
-        self.motion_grace_seconds = 3  # secondi senza movimento prima di fermare il video
+        self.motion_grace_seconds = 3
         self.motion_recording_active = False
 
-        # ---- filtri video ----
+        # Filtri e stato
         self.gray_filter = False
-
-        # ---- stato di registrazione ----
         self.recording = False
         self.video_writer = None
         self.record_start_time = None
-
-        # ---- variabili per logging volti durante registrazione ----
         self.recording_start_time = None
-        self.face_detection_counter = 0  # counts frames where faces were detected
+        self.face_detection_counter = 0
 
-        # ---- statisctiche ----
+        # Statistiche
         self.photo_count = 0
         self.video_count = 0
         self.last_photo = "Nessuna"
@@ -108,80 +101,71 @@ class FaceApp(QWidget):
         self.save_path = os.getcwd()
         self.load_stats()
 
-        # ---- geolocalizzazione ----
+        # Geolocalizzazione
         self.location = "Località sconosciuta"
         try:
             g = geocoder.ip("me")
             if g.city or g.country:
-                city = g.city or ""
-                country = g.country or ""
-                self.location = f"{city}, {country}".strip(", ")
+                self.location = f"{g.city or ''}, {g.country or ''}".strip(", ")
         except Exception:
-            pass  # Keep default location on any error
+            pass
 
-        # ---- inizzializzazione webcam ----
+        # Webcam
         self.available_indices, self.available_names = self.scan_webcams()
         if not self.available_indices:
             raise RuntimeError("Nessuna webcam trovata.")
-        
+
         self.current_cam_index = self.available_indices[0]
         self.current_cam_name = self.available_names[0]
-        try:
-            self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
-            if not self.cap.isOpened():
-                raise RuntimeError("Errore: impossibile aprire la webcam principale.")
-        except Exception as e:
-            logger.error(f"Camera initialization failed: {e}")
-            raise RuntimeError("Errore: impossibile aprire la webcam principale.")
+        self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
+        if not self.cap.isOpened():
+            raise RuntimeError("Impossibile aprire la webcam principale.")
 
-        # ---- riconoscimento volto ----
+        # Face detector (Haar Cascade)
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
         )
 
-        # ---- YOLO model ----
-        self.yolo_model = YOLO("yolov8n.pt")
+        # YOLO model
+        self.yolo_model = YOLO("yolov8n.pt")  # Usa yolov8n.pt o scarica il modello desiderato (es. yolov11n.pt per versioni più recenti)
 
-        # ---- Label del video principale ----
-        self.video_label = QLabel(alignment=Qt.AlignCenter)
-        self.video_label.setObjectName("video_label")
-        self.video_label.setMinimumSize(0, 0)
+        # YOLO parameters
+        self.yolo_enabled = True
+        self.yolo_rect_color = QColor(0, 255, 0)  # green
+        self.yolo_rect_thickness = 2
+        self.yolo_results_cache = []  # Cache for YOLO results
+        self.frame_counter = 0
+
+        # Interfaccia - Usa ClickableLabel invece di QLabel
+        self.video_label = ClickableLabel(self)
+        self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        self.cam_name_label = QLabel(
-            f"Webcam attiva: {self.current_cam_name}",
-            alignment=Qt.AlignCenter
-        )
 
-        # ---- timer per aggiornamento frame ----
+        self.cam_name_label = QLabel(f"Webcam attiva: {self.current_cam_name}", alignment=Qt.AlignCenter)
+
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_frame)
         self.running = False
         self.prev_time = time.time()
         self.fps = 0
 
-        # ---- frame counter and YOLO detection ----
+        # Riconoscimento oggetti
+        self.known_descriptors = {}  # nome → (descriptors, filename_senza_estensione)
+        self.load_known_objects()
+        self.current_recognition = None
         self.frame_counter = 0
-        self.yolo_enabled = True
-        self.yolo_results_cache = []  # Cache last YOLO results
 
-        # ---- webcam extra ----
-        self.extra_caps = []
-        self.extra_cam_widgets = []
-        self.extra_timer = QTimer()
-        self.extra_timer.timeout.connect(self.update_extra_cams)
-        self.extra_timer.start(200)
+        # Selezione oggetto
+        self.selected_rect = None  # (x, y, w, h)
 
-        # ============================================================================================
-        # BARRA LATERALE DI CONTROLLO, CON TUTTE LE IMPOSTAZIONI E STATISTICHE
-        # ============================================================================================
-        # barra laterale scrollabile con tutte le impostazioni e statistiche
+        # Layout sidebar
         settings_layout = QVBoxLayout()
         settings_layout.addWidget(self.create_webcam_group())
         settings_layout.addWidget(self.create_face_group())
         settings_layout.addWidget(self.create_yolo_group())
         settings_layout.addWidget(self.create_feedback_group())
         settings_layout.addWidget(self.create_savepath_group())
+        settings_layout.addWidget(self.create_object_group())
         settings_layout.addStretch()
 
         settings_container = QWidget()
@@ -192,35 +176,30 @@ class FaceApp(QWidget):
         scroll_area.setWidget(settings_container)
         self.scroll_area = scroll_area
 
-        # barra laterale con pulsante di toggle
         sidebar_layout = QVBoxLayout()
         self.toggle_sidebar_button = QPushButton("Nascondi impostazioni")
         self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
         sidebar_layout.addWidget(self.toggle_sidebar_button)
         sidebar_layout.addWidget(scroll_area, 1)
-        
+
         sidebar_widget = QWidget()
         sidebar_widget.setLayout(sidebar_layout)
         sidebar_widget.setFixedWidth(330)
         self.sidebar_widget = sidebar_widget
 
-        # ============================================================================================
-        # LAYOUT PRINCIPALE: sidebar a sinistra e video a destra
-        # ============================================================================================
+        # Layout principale
         video_layout = QVBoxLayout()
         video_layout.addWidget(self.cam_name_label)
         video_layout.addWidget(self.video_label)
 
         main_layout = QHBoxLayout(self)
-        main_layout.addWidget(self.sidebar_widget, 0)  # Fixed width sidebar with button always visible
-        main_layout.addLayout(video_layout, 1)         # Video area takes remaining space
+        main_layout.addWidget(self.sidebar_widget, 0)
+        main_layout.addLayout(video_layout, 1)
 
-
-    # ============================================================================================
-    # GESTIONE DELLE STATISTICHE DI UTILIZZO, CON CARICAMENTO E SALVATAGGIO SU FILE JSON
-    # ============================================================================================
+    # ========================================================================
+    # METODI STATISTICHE
+    # ========================================================================
     def load_stats(self):
-        """Load statistics from JSON file."""
         if not os.path.exists(STATS_FILE):
             return
         try:
@@ -231,11 +210,10 @@ class FaceApp(QWidget):
             self.last_photo = data.get("last_photo", "Nessuna")
             self.last_video = data.get("last_video", "Nessuno")
             self.save_path = data.get("save_path", os.getcwd())
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Failed to load stats: {e}")
+        except Exception as e:
+            logger.warning(f"Errore caricamento stats: {e}")
 
     def save_stats(self):
-        """Save statistics to JSON file."""
         data = {
             "photos": self.photo_count,
             "videos": self.video_count,
@@ -246,82 +224,70 @@ class FaceApp(QWidget):
         try:
             with open(STATS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
-        except IOError as e:
-            logger.warning(f"Failed to save stats: {e}")
+        except Exception as e:
+            logger.warning(f"Errore salvataggio stats: {e}")
 
-    # ============================================================================================
-    # RILEVAMENTO DELLE WEBCAM DISPONIBILI SUL SISTEMA
-    # ============================================================================================
+    # ========================================================================
+    # WEBCAM
+    # ========================================================================
     def scan_webcams(self):
-        """Scan for available webcams with timeout."""
         indices = []
         names = []
         for i in range(10):
             try:
                 cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
                 if cap.isOpened():
-                    # Verify it's actually a working camera
                     ret, _ = cap.read()
                     if ret:
                         indices.append(i)
                         names.append(f"Webcam {i}")
                     cap.release()
-                else:
-                    cap.release()
-            except Exception as e:
-                logger.debug(f"Error scanning camera {i}: {e}")
+            except:
                 continue
         return indices, names
 
-    # ============================================================================================
-    # CREAZIONE DEI GRUPPI PER LA WEBCAM, RILEVAMENTO VOLTI, FEEDBACK E PERCORSO DI SALVATAGGIO
-    # ============================================================================================
+    # ========================================================================
+    # CREAZIONE PANNELLI
+    # ========================================================================
     def create_webcam_group(self):
-        """Create webcam control group."""
         group = QGroupBox("Webcam")
         layout = QVBoxLayout()
-
-        # selettore di webcam
         self.cam_selector = QComboBox()
         for name in self.available_names:
             self.cam_selector.addItem(name)
+        self.cam_selector.addItem("Camera Telefono")
         self.cam_selector.currentIndexChanged.connect(self.change_camera)
         layout.addWidget(self.cam_selector)
 
-        # bottone di avvio/stop camera
+        self.phone_url_input = QLineEdit()
+        self.phone_url_input.setPlaceholderText("Inserisci URL telefono (es. http://10.30.23.5:8080/video)")
+        layout.addWidget(self.phone_url_input)
+
         self.start_button = QPushButton("Start Camera")
         self.start_button.clicked.connect(self.toggle_camera)
         self.start_button.setStyleSheet("background-color: green; color: white;")
         layout.addWidget(self.start_button)
 
-        # bottone di avvio/stop registrazione
         self.record_button = QPushButton("Start Recording")
         self.record_button.clicked.connect(self.toggle_recording)
         self.record_button.setStyleSheet("background-color: #173c68; color: white;")
         layout.addWidget(self.record_button)
-
         group.setLayout(layout)
         return group
 
     def create_face_group(self):
-        """Create face detection control group."""
         group = QGroupBox("Rilevamento Volti")
         layout = QVBoxLayout()
-
-        #  bottone per scegliere il colore del rettangolo di rilevamento
         self.color_button = QPushButton("Colore rettangolo")
         self.color_button.clicked.connect(self.choose_color)
         layout.addWidget(self.color_button)
 
-        # ---- motion detection toggle ----
         self.motion_button = QPushButton("Motion Recording")
         self.motion_button.setCheckable(True)
         self.motion_button.setChecked(True)
         self.motion_button.toggled.connect(self.toggle_motion_button)
         layout.addWidget(self.motion_button)
 
-
-        # TERTIARY: larghezza del rettangolo di rilevamento
         layout.addWidget(QLabel("Spessore rettangolo"))
         self.thickness_slider = QSlider(Qt.Horizontal)
         self.thickness_slider.setRange(1, 10)
@@ -329,14 +295,12 @@ class FaceApp(QWidget):
         self.thickness_slider.valueChanged.connect(self.update_thickness)
         layout.addWidget(self.thickness_slider)
 
-        # Zoom Slider
         layout.addWidget(QLabel("Zoom"))
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(10, 200)
         self.zoom_slider.setValue(100)
         self.zoom_slider.valueChanged.connect(self.update_zoom)
         layout.addWidget(self.zoom_slider)
-
         group.setLayout(layout)
         return group
 
@@ -373,128 +337,133 @@ class FaceApp(QWidget):
         return group
 
     def create_feedback_group(self):
-        """Create feedback and statistics group."""
         group = QGroupBox("Feedback")
         layout = QVBoxLayout()
-
-        # TERTIARY: checkbox mostra coordinate
         self.coords_check = QCheckBox("Mostra coordinate")
         self.coords_check.toggled.connect(self.toggle_coords)
         layout.addWidget(self.coords_check)
 
-        # checkbox mostra FPS
         self.fps_check = QCheckBox("Mostra FPS")
-        self.fps_check.setChecked(self.show_fps)
+        self.fps_check.setChecked(True)
         self.fps_check.toggled.connect(self.toggle_fps)
         layout.addWidget(self.fps_check)
 
-        # ---- filtro bianco e nero ----
         self.gray_button = QPushButton("Filtro bianco e nero: OFF")
         self.gray_button.clicked.connect(self.toggle_gray_filter)
         layout.addWidget(self.gray_button)
 
-        # bottone per salvare snapshot
         self.snapshot_button = QPushButton("Salva snapshot")
         self.snapshot_button.clicked.connect(self.save_snapshot)
         layout.addWidget(self.snapshot_button)
 
-        # label per statistiche foto e video
         self.photo_label = QLabel(f"Foto scattate: {self.photo_count}")
         layout.addWidget(self.photo_label)
-
         self.video_label_widget = QLabel(f"Video registrati: {self.video_count}")
         layout.addWidget(self.video_label_widget)
-
         self.last_photo_label = QLabel(f"Ultima foto: {self.last_photo}")
         layout.addWidget(self.last_photo_label)
-
         self.last_video_label = QLabel(f"Ultimo video: {self.last_video}")
         layout.addWidget(self.last_video_label)
-
         group.setLayout(layout)
         return group
 
     def create_savepath_group(self):
-        """Create save path selection group."""
         group = QGroupBox("Percorso salvataggio")
         layout = QVBoxLayout()
-
         self.path_label = QLabel(self.save_path)
         layout.addWidget(self.path_label)
-
         self.change_path_button = QPushButton("Cambia")
         self.change_path_button.clicked.connect(self.change_save_path)
         layout.addWidget(self.change_path_button)
+        group.setLayout(layout)
+        return group
+
+    def create_object_group(self):
+        group = QGroupBox("Riconoscimento Oggetti")
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Clicca sul video per selezionare un oggetto (clic di nuovo per deselezionare)"))
+
+        hbox = QHBoxLayout()
+        self.label_input = QLineEdit()
+        self.label_input.setPlaceholderText("es. Telefono, Tazza rossa...")
+        hbox.addWidget(self.label_input)
+
+        btn_label = QPushButton("Salva oggetto selezionato")
+        btn_label.clicked.connect(self.on_label_object)
+        hbox.addWidget(btn_label)
+        layout.addLayout(hbox)
+
+        btn_clear = QPushButton("Cancella tutti i modelli")
+        btn_clear.clicked.connect(self.clear_known_objects)
+        layout.addWidget(btn_clear)
 
         group.setLayout(layout)
         return group
 
-    # ============================================================================================
-    # AZIONI PER I CONTROLLI
-    # ============================================================================================
+    # ========================================================================
+    # AZIONI CONTROLLI
+    # ========================================================================
     def change_save_path(self):
-        """Change the save path for photos and videos."""
-        if folder := QFileDialog.getExistingDirectory(self, "Scegli cartella"):
+        folder = QFileDialog.getExistingDirectory(self, "Scegli cartella")
+        if folder:
             self.save_path = folder
             self.path_label.setText(folder)
             self.save_stats()
 
     def toggle_sidebar(self):
-        """Toggle sidebar visibility and adjust layout."""
         if self.scroll_area.isVisible():
             self.scroll_area.hide()
             self.toggle_sidebar_button.setText("Mostra impostazioni")
         else:
             self.scroll_area.show()
             self.toggle_sidebar_button.setText("Nascondi impostazioni")
-        # Update geometry so video area expands/shrinks immediately
-        self.video_label.updateGeometry()
         self.update()
 
     def change_camera(self, index):
-        """Switch to a different camera."""
-        if index < 0 or index >= len(self.available_indices):
+        if index < 0 or index >= self.cam_selector.count():
             return
-        
-        new_index = self.available_indices[index]
-        new_name = self.available_names[index]
 
         if self.cap.isOpened():
             self.cap.release()
 
-        self.cap = cv2.VideoCapture(new_index, cv2.CAP_MSMF)
-        if not self.cap.isOpened():
-            QMessageBox.warning(self, "Errore", "Impossibile aprire la webcam selezionata.")
-            return
+        if index == len(self.available_indices):  # Opzione "Camera Telefono"
+            url = self.phone_url_input.text().strip() or "http://10.30.23.5:8080/video"  # Default dal messaggio utente
+            self.cap = cv2.VideoCapture(url)
+            if not self.cap.isOpened():
+                QMessageBox.warning(self, "Errore", "Impossibile connettere alla camera del telefono. Verifica l'URL e la connessione.")
+                self.cap = cv2.VideoCapture(self.current_cam_index)  # Torna alla default
+                return
+            self.current_cam_name = "Camera Telefono"
+        else:
+            new_index = self.available_indices[index]
+            new_name = self.available_names[index]
+            self.cap = cv2.VideoCapture(new_index, cv2.CAP_MSMF)
+            if not self.cap.isOpened():
+                QMessageBox.warning(self, "Errore", "Impossibile aprire la webcam selezionata.")
+                return
+            self.current_cam_index = new_index
+            self.current_cam_name = new_name
 
-        self.current_cam_index = new_index
-        self.current_cam_name = new_name
         self.cam_name_label.setText(f"Webcam attiva: {self.current_cam_name}")
 
     def choose_color(self):
-        """Open color picker dialog for rectangle color."""
         color = QColorDialog.getColor(self.rect_color, self, "Scegli colore")
         if color.isValid():
             self.rect_color = color
 
     def update_thickness(self, value):
-        """Update rectangle thickness from slider."""
         self.rect_thickness = value
 
     def update_zoom(self, value):
-        """Update zoom factor from slider."""
         self.zoom_factor = value / 100.0
 
     def toggle_coords(self, checked):
-        """Toggle coordinate display."""
         self.show_coords = checked
 
     def toggle_fps(self, checked):
-        """Toggle FPS display."""
         self.show_fps = checked
 
     def toggle_camera(self):
-        """Start or stop camera stream."""
         if self.running:
             self.timer.stop()
             self.video_label.clear()
@@ -507,9 +476,7 @@ class FaceApp(QWidget):
         self.running = not self.running
 
     def toggle_gray_filter(self):
-        """Toggle grayscale filter on/off."""
         self.gray_filter = not self.gray_filter
-
         if self.gray_filter:
             self.gray_button.setText("Filtro bianco e nero: ON")
             self.gray_button.setStyleSheet("background-color: #444444; color: white;")
@@ -518,7 +485,6 @@ class FaceApp(QWidget):
             self.gray_button.setStyleSheet("")
 
     def toggle_motion_button(self, checked):
-        """Toggle motion detection on/off."""
         self.motion_enabled = checked
         if checked:
             self.motion_button.setText("Motion Recording: ON")
@@ -526,7 +492,7 @@ class FaceApp(QWidget):
         else:
             self.motion_button.setText("Motion Recording: OFF")
             self.motion_button.setStyleSheet("background-color: #6c757d; color: white;")
-            self.prev_gray = None  # reset motion detection
+            self.prev_gray = None
 
     def toggle_yolo_button(self, checked):
         """Toggle YOLO object detection on/off."""
@@ -549,137 +515,100 @@ class FaceApp(QWidget):
         """Update YOLO box thickness from slider."""
         self.yolo_rect_thickness = value
 
-
-    # ============================================================================================
-    # REGISTRAZIONE VIDEO, con salvataggio del file + LOGGING
-    # ============================================================================================
+    # ========================================================================
+    # REGISTRAZIONE VIDEO
+    # ========================================================================
     def toggle_recording(self):
-        """Start or stop video recording."""
         if not self.running:
-            QMessageBox.warning(self, "Errore", "La camera deve essere attiva per registrare.")
+            QMessageBox.warning(self, "Errore", "Avvia prima la fotocamera.")
             return
 
         if self.recording:
-            # ---- stoppa la registrazione ----
             self.recording = False
             self.record_button.setText("Start Recording")
             self.record_button.setStyleSheet("background-color: #173c68; color: white;")
-
             if self.video_writer:
                 self.video_writer.release()
                 self.video_writer = None
 
-            # Calcolo durata per il log
-            if self.recording_start_time:
-                duration_sec = int(time.time() - self.recording_start_time)
-                duration_str = time.strftime("%H:%M:%S", time.gmtime(duration_sec))
-            else:
-                duration_str = "??:??:??"
+            duration_sec = int(time.time() - self.recording_start_time) if self.recording_start_time else 0
+            duration_str = time.strftime("%H:%M:%S", time.gmtime(duration_sec))
 
-            # LOG DI CHIUSURA
             logger.info(
                 "Registrazione TERMINATA | durata=%s | frame con volti=%d | luogo=%s",
-                duration_str,
-                self.face_detection_counter,
-                self.location
+                duration_str, self.face_detection_counter, self.location
             )
 
             self.last_video = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             self.last_video_label.setText(f"Ultimo video: {self.last_video}")
             self.save_stats()
-            QMessageBox.information(self, "Registrazione", "Video salvato con successo!")
-
-            # Reset per prossima registrazione
+            QMessageBox.information(self, "Registrazione", "Video salvato!")
             self.face_detection_counter = 0
             self.recording_start_time = None
-
         else:
-            # ---- inizia la registrazione ----
             filename = datetime.datetime.now().strftime("record_%Y%m%d_%H%M%S.mp4")
             full_path = os.path.join(self.save_path, filename)
-
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
             self.video_writer = cv2.VideoWriter(full_path, fourcc, 30, (w, h))
 
             if not self.video_writer.isOpened():
-                QMessageBox.warning(self, "Errore", "Impossibile creare il file video.")
-                self.video_writer = None
+                QMessageBox.warning(self, "Errore", "Impossibile creare il video.")
                 return
 
             self.recording = True
             self.recording_start_time = time.time()
             self.record_start_time = time.time()
             self.face_detection_counter = 0
-
             self.video_count += 1
             self.video_label_widget.setText(f"Video registrati: {self.video_count}")
             self.record_button.setText("Stop Recording")
             self.record_button.setStyleSheet("background-color: red; color: white;")
             self.save_stats()
 
-            # LOG DI INIZIO
-            logger.info(
-                "Registrazione INIZIATA | file=%s | luogo=%s",
-                filename,
-                self.location
-            )
+            logger.info("Registrazione INIZIATA | file=%s | luogo=%s", filename, self.location)
 
-
-    # ============================================================================================
-    # SNAPSHOT, con salvataggio dell'immagine e aggiornamento delle statistiche
-    # ============================================================================================
+    # ========================================================================
+    # SNAPSHOT
+    # ========================================================================
     def save_snapshot(self):
-        """Capture and save a grayscale snapshot from the camera."""
         try:
             ret, frame = self.cap.read()
             if not ret:
-                QMessageBox.warning(self, "Errore", "Impossibile catturare l'immagine.")
                 return
-
             frame = cv2.flip(frame, 1)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
             filename = datetime.datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.png")
             full_path = os.path.join(self.save_path, filename)
-
-            success = cv2.imwrite(full_path, gray)
-            if not success:
-                QMessageBox.warning(self, "Errore", "Impossibile salvare la foto.")
-                return
-
-            self.photo_count += 1
-            self.last_photo = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            self.photo_label.setText(f"Foto scattate: {self.photo_count}")
-            self.last_photo_label.setText(f"Ultima foto: {self.last_photo}")
-            self.save_stats()
-            QMessageBox.information(self, "Snapshot", "Foto in bianco e nero salvata con successo!")
+            if cv2.imwrite(full_path, gray):
+                self.photo_count += 1
+                self.last_photo = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                self.photo_label.setText(f"Foto scattate: {self.photo_count}")
+                self.last_photo_label.setText(f"Ultima foto: {self.last_photo}")
+                self.save_stats()
+                QMessageBox.information(self, "Snapshot", "Foto salvata!")
+            else:
+                QMessageBox.warning(self, "Errore", "Impossibile salvare immagine.")
         except Exception as e:
-            logger.error(f"Error saving snapshot: {e}")
-            QMessageBox.warning(self, "Errore", f"Errore nel salvataggio: {e}")
+            logger.error(f"Errore snapshot: {e}")
+            QMessageBox.warning(self, "Errore", str(e))
 
-
-    # ============================================================================================
-    # LOOP PRINCIPALE DI ACQUISIZIONE
-    # ============================================================================================
+    # ========================================================================
+    # UPDATE FRAME (CUORE DELL'APPLICAZIONE)
+    # ========================================================================
     def update_frame(self):
-        """Capture frame, process, and display on label."""
         ret, frame = self.cap.read()
         if not ret:
             return
 
         frame = cv2.flip(frame, 1)
-        
-        # Convert to grayscale once - reuse for motion detection and face detection
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ---- filtro bianco e nero ----
         if self.gray_filter:
             frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-        # ---- zoom digitale ----
+        # Zoom
         if self.zoom_factor > 1.0:
             h, w = frame.shape[:2]
             new_w = int(w / self.zoom_factor)
@@ -690,60 +619,72 @@ class FaceApp(QWidget):
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # ============================================================================================
-        # MOTION DETECTION LOGIC (AUTO RECORDING)
-        # ============================================================================================
+        # Motion detection
         if self.motion_enabled:
             if self.prev_gray is None:
                 self.prev_gray = gray.copy()
             else:
-                # Calculate difference between frames
                 delta = cv2.absdiff(self.prev_gray, gray)
                 thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
                 motion_pixels = cv2.countNonZero(thresh)
 
-                # Motion detected
                 if motion_pixels > self.motion_threshold:
                     self.motion_last_seen = time.time()
-
-                    # Start recording ONLY if not already recording
                     if not self.recording:
                         self.toggle_recording()
                         self.motion_recording_active = True
-
-                # No motion detected for X seconds
                 else:
-                    if (
-                        self.motion_recording_active
-                        and self.recording
-                        and time.time() - self.motion_last_seen > self.motion_grace_seconds
-                    ):
+                    if (self.motion_recording_active and self.recording and
+                        time.time() - self.motion_last_seen > self.motion_grace_seconds):
                         self.toggle_recording()
                         self.motion_recording_active = False
-
                 self.prev_gray = gray.copy()
-        
-        # ---- rilevazione volti ----
-        faces = self.detector.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5, minSize=(40, 40))
 
-        # Conta i frame dove sono stati rilevati volti (non il numero totale di volti)
+        # Rilevamento volti
+        faces = self.detector.detectMultiScale(gray, 1.3, 5, minSize=(40,40))
         if self.recording and len(faces) > 0:
             self.face_detection_counter += 1
 
-        # Disegna rettangoli attorno ai volti
-        for (x, y, w, h) in faces:
-            cv2.rectangle(
-                frame, (x, y), (x+w, y+h),
-                (self.rect_color.blue(), self.rect_color.green(), self.rect_color.red()),
-                self.rect_thickness
-            )
+        for (x,y,w,h) in faces:
+            cv2.rectangle(frame, (x,y), (x+w,y+h),
+                         (self.rect_color.blue(), self.rect_color.green(), self.rect_color.red()),
+                         self.rect_thickness)
             if self.show_coords:
-                cv2.putText(
-                    frame, f"{x},{y}", (x, y-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1
-                )
+                cv2.putText(frame, f"{x},{y}", (x,y-10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
 
-        # ---- YOLO Object Detection (every 3 frames for performance) ----
+        # FPS
+        now = time.time()
+        self.fps = 1.0 / max(now - self.prev_time, 0.0001)
+        self.prev_time = now
+        if self.show_fps:
+            cv2.putText(frame, f"FPS: {int(self.fps)}", (10,30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+
+        # Data
+        date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        cv2.putText(frame, date_str, (10, frame.shape[0]-10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2)
+
+        # Registrazione overlay
+        if self.recording and self.video_writer:
+            elapsed = int(time.time() - self.record_start_time)
+            timer_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+
+            cv2.circle(frame, (20,60), 10, (0,0,255), -1)
+            cv2.putText(frame, "REC", (40,65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            cv2.putText(frame, timer_str, (100,65), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
+
+            tw, _ = cv2.getTextSize(timer_str, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+            cv2.putText(frame, self.location, (100 + tw + 12, 65),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2)
+
+            self.video_writer.write(frame)
+        else:
+            cv2.putText(frame, self.location, (10, frame.shape[0]-40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2)
+
+        # Rilevamento oggetti con YOLO (ogni 3 frame per performance)
         self.frame_counter += 1
         if self.yolo_enabled:
             if self.frame_counter % 3 == 0:
@@ -782,103 +723,225 @@ class FaceApp(QWidget):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, 
                            (self.yolo_rect_color.blue(), self.yolo_rect_color.green(), self.yolo_rect_color.red()), 2)
 
-        # ---- mostra FPS ----
-        now = time.time()
-        self.fps = 1.0 / max(now - self.prev_time, 0.0001)
-        self.prev_time = now
-        
-        if self.show_fps:
-            cv2.putText(
-                frame, f"FPS: {int(self.fps)}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2
-            )
+        # Disegna rettangolo selezione oggetto
+        if self.selected_rect:
+            x, y, w, h = self.selected_rect
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)  # blu
 
-        # ---- informazioni data ----
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        date_str = datetime.datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        cv2.putText(
-            frame, date_str, (10, frame.shape[0]-10),
-            font, 0.6, (200, 200, 200), 2
-        )
-
-        # ---- mostra registrazione con tempo e luogo ----
-        if self.recording and self.video_writer:
-            elapsed = int(time.time() - self.record_start_time)
-            timer_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
-            
-            # cerchio di registrazione rosso
-            cv2.circle(frame, (20, 60), 10, (0, 0, 255), -1)
-            cv2.putText(frame, "REC", (40, 65), font, 0.7, (0, 0, 255), 2)
-            cv2.putText(frame, timer_str, (100, 65), font, 0.8, (255, 255, 255), 2)
-            
-            # posizione del luogo a destra del timer
-            (tx_w, tx_h), _ = cv2.getTextSize(timer_str, font, 0.8, 2)
-            loc_x = 100 + tx_w + 12
-            cv2.putText(frame, self.location, (loc_x, 65), font, 0.6, (200, 200, 200), 2)
-            
-            # salva il frame nel video
-            self.video_writer.write(frame)
-        else:
-            # se non stiamo registrando, mostra comunque la posizione
-            cv2.putText(
-                frame, self.location, (10, frame.shape[0]-40),
-                font, 0.6, (200, 200, 200), 2
-            )
-
-        # ---- Convert and Display Frame ----
+        # Visualizzazione
         self.last_frame = frame.copy()
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        img = QImage(rgb.data, w, h, ch*w, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(img).scaled(
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimg).scaled(
             self.video_label.size(),
             Qt.KeepAspectRatio,
             Qt.SmoothTransformation
         )
         self.video_label.setPixmap(pixmap)
 
-    # ============================================================================================
-    # CAMERA EXTRA (placeholder per future implementazioni di feed multipli)
-    # ============================================================================================
-    def update_extra_cams(self):
-        """Update extra camera feeds (placeholder)."""
-        pass
+    # ========================================================================
+    # GESTIONE CLICK PER SELEZIONE OGGETTO
+    # ========================================================================
+    def handle_object_click(self, pos):
+        if self.last_frame is None or not self.running:
+            return
 
-    # ============================================================================================
-    # CLEANUP DELLE RISORSE ALLA CHIUSURA DELL'APPLICAZIONE, PER EVITARE LOCK DI WEBCAM E FILE
-    # ============================================================================================
+        # Calcola posizione nel frame originale considerando lo scaling e aspect ratio
+        label_size = self.video_label.size()
+        pixmap = self.video_label.pixmap()
+        if not pixmap:
+            return
+        pixmap_size = pixmap.size()
+
+        h_frame, w_frame = self.last_frame.shape[:2]
+        aspect_frame = w_frame / h_frame
+        aspect_label = label_size.width() / label_size.height()
+
+        if aspect_frame > aspect_label:
+            # Barre verticali
+            draw_width = label_size.width()
+            draw_height = int(draw_width / aspect_frame)
+            x_offset = 0
+            y_offset = (label_size.height() - draw_height) // 2
+        else:
+            # Barre orizzontali
+            draw_height = label_size.height()
+            draw_width = int(draw_height * aspect_frame)
+            x_offset = (label_size.width() - draw_width) // 2
+            y_offset = 0
+
+        click_x = pos.x() - x_offset
+        click_y = pos.y() - y_offset
+
+        if click_x < 0 or click_x >= draw_width or click_y < 0 or click_y >= draw_height:
+            return  # Click fuori area video
+
+        scale_x = w_frame / draw_width
+        scale_y = h_frame / draw_height
+        frame_x = int(click_x * scale_x)
+        frame_y = int(click_y * scale_y)
+
+        # Se già selezionato, deseleziona
+        if self.selected_rect:
+            self.selected_rect = None
+            return
+
+        # Altrimenti, rileva oggetto con floodFill
+        frame_copy = self.last_frame.copy()
+        seed = (frame_x, frame_y)
+        h, w = frame_copy.shape[:2]
+        mask = np.zeros((h + 2, w + 2), np.uint8)
+
+        # Flood fill parameters: loDiff and upDiff for color tolerance
+        cv2.floodFill(frame_copy, mask, seed, (255, 0, 0), (20, 20, 20), (20, 20, 20), flags=cv2.FLOODFILL_MASK_ONLY)
+
+        mask = mask[1:h+1, 1:w+1]
+
+        # Find contours on the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if contours:
+            # Find the contour that contains the seed point
+            for cnt in contours:
+                if cv2.pointPolygonTest(cnt, (frame_x, frame_y), False) >= 0:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    if w > 20 and h > 20:  # Min size filter
+                        self.selected_rect = (x, y, w, h)
+                    break
+
+    # ========================================================================
+    # RICONOSCIMENTO OGGETTI
+    # ========================================================================
+    def load_known_objects(self):
+        self.known_descriptors.clear()
+        for npz_file in KNOWN_OBJECTS_DIR.glob("*.npz"):
+            try:
+                data = np.load(npz_file, allow_pickle=True)
+                name = str(data.get("name", ""))
+                des = data.get("des")
+                if des is not None and len(des) > 20:
+                    self.known_descriptors[name] = (des, npz_file.stem)
+            except Exception as e:
+                logger.warning(f"Errore caricamento {npz_file}: {e}")
+
+    def save_labeled_object(self, name, crop_bgr):
+        if not name.strip():
+            QMessageBox.warning(self, "Errore", "Inserisci un nome valido.")
+            return False
+
+        orb = cv2.ORB_create(nfeatures=1200)  # aumentato perché frame intero
+        kp, des = orb.detectAndCompute(crop_bgr, None)
+
+        if des is None or len(des) < 40:
+            QMessageBox.warning(self, "Attenzione",
+                                "Pochi punti caratteristici rilevati.\n"
+                                "Prova con più contrasto/luce o oggetto più grande.")
+            return False
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = "".join(c for c in name if c.isalnum() or c in " _-").strip()
+        filename = f"{safe_name}_{timestamp}.npz"
+        path = KNOWN_OBJECTS_DIR / filename
+
+        # Salva anche immagine di riferimento
+        ref_path = KNOWN_OBJECTS_DIR / f"{safe_name}_{timestamp}_ref.png"
+        cv2.imwrite(str(ref_path), crop_bgr)
+
+        np.savez(path,
+                 name=name,
+                 des=des,
+                 timestamp=timestamp,
+                 ref_filename=str(ref_path.name))
+
+        self.known_descriptors[name] = (des, filename[:-4])
+
+        QMessageBox.information(self, "Successo", f"Oggetto '{name}' salvato!")
+        return True
+
+    def recognize_object(self, gray):
+        if not self.known_descriptors:
+            return None
+
+        orb = cv2.ORB_create(nfeatures=1200)
+        kp_frame, des_frame = orb.detectAndCompute(gray, None)
+        if des_frame is None or len(des_frame) < 40:
+            return None
+
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+        best_name = None
+        best_count = 0
+        best_score = 0
+
+        for name, (des_ref, _) in self.known_descriptors.items():
+            if len(des_ref) < 30:
+                continue
+
+            matches = bf.match(des_frame, des_ref)
+            good = [m for m in matches if m.distance < MATCH_DISTANCE_THRESHOLD]
+            good_count = len(good)
+
+            if good_count > best_count:
+                score = good_count / min(len(des_frame), len(des_ref))
+                if good_count >= MIN_GOOD_MATCHES and score > best_score:
+                    best_count = good_count
+                    best_score = score
+                    best_name = name
+
+        if best_count >= MIN_GOOD_MATCHES and best_score > MIN_SCORE:
+            return f"{best_name} ({best_count} match, {best_score:.2f})"
+        return None
+
+    def on_label_object(self):
+        if self.last_frame is None or not self.running:
+            QMessageBox.warning(self, "Attenzione", "Avvia la camera.")
+            return
+
+        name = self.label_input.text().strip()
+        if self.selected_rect:
+            x, y, w, h = self.selected_rect
+            crop = self.last_frame[y:y+h, x:x+w]
+            if crop.size == 0:
+                QMessageBox.warning(self, "Errore", "Selezione vuota.")
+                return
+        else:
+            crop = self.last_frame
+
+        if self.save_labeled_object(name, crop):
+            self.label_input.clear()
+            self.selected_rect = None  # Reset dopo salvataggio
+
+    def clear_known_objects(self):
+        reply = QMessageBox.question(self, "Conferma",
+                                    "Cancellare tutti gli oggetti salvati?",
+                                    QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            for f in KNOWN_OBJECTS_DIR.glob("*.*"):
+                f.unlink(missing_ok=True)
+            self.load_known_objects()
+            QMessageBox.information(self, "Fatto", "Tutti i modelli sono stati cancellati.")
+
     def closeEvent(self, event):
-        """Clean up resources on application close."""
         if self.timer.isActive():
             self.timer.stop()
-        if self.extra_timer.isActive():
-            self.extra_timer.stop()
-
         if self.cap.isOpened():
             self.cap.release()
-        for cap in self.extra_caps:
-            if cap.isOpened():
-                cap.release()
         if self.video_writer:
             self.video_writer.release()
-
         event.accept()
 
-
-# ========================================================================================================================================================================================================================
-# PUNTO DI INGRESSO DELL'APP ========================================================================================================================================================================================
-# ========================================================================================================================================================================================================================
+# =============================================================================================
+# ENTRY POINT
+# =============================================================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-
-    # carica il file di stile QSS se presente, per migliorare l'aspetto dell'applicazione
-    with contextlib.suppress(FileNotFoundError):
+    try:
         with open("style.qss", "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
+    except FileNotFoundError:
+        pass
 
-    # crea e mostra la finestra principale dell'applicazione
     window = FaceApp()
     window.show()
-
     sys.exit(app.exec())
