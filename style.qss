@@ -1,71 +1,302 @@
-/*========================== Finestra principale ========================= */
+/* ===================================================================================== */
+/* MODERN PROFESSIONAL THEME - Dark Mode with Blue Accents */
+/* ===================================================================================== */
+
+/* ========================== Main Window & Base ========================== */
 QWidget {
-    background-color: #262627;
-    color: #ECEFF4;
-    font-family: "Segoe UI", sans-serif;
+    background-color: #0F1419;
+    color: #E8EAED;
+    font-family: "Segoe UI", "Roboto", sans-serif;
+    font-size: 12px;
 }
 
-/* ========================== Etichette ================================== */
+/* ========================== Scrollbar ========================== */
+QScrollBar:vertical {
+    background-color: #1A1E2E;
+    width: 12px;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #4A90E2;
+    border-radius: 6px;
+    min-height: 20px;
+    margin: 2px 0px 2px 0px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #5FA3F5;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+}
+
+/* ========================== Labels ========================== */
 QLabel {
-    color: #ECEFF4;
-    font-size: 14px;
+    color: #E8EAED;
+    font-size: 12px;
 }
 
-/* ========================== Pulsanti generici ========================== */
+QLabel#title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #4A90E2;
+}
+
+QLabel#subtitle {
+    font-size: 13px;
+    color: #A0A7B3;
+}
+
+/* ========================== Buttons - Primary ========================== */
 QPushButton {
-    background-color: #173c68;
-    color: #ECEFF4;
-    font-size: 14px;
-    padding: 8px;
-    border-radius: 5px;
-}
-QPushButton:hover {
-    background-color: #1f4a8a;
-}
-QPushButton:pressed {
-    background-color: #13223f;
+    background-color: #4A90E2;
+    color: #FFFFFF;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    min-height: 32px;
 }
 
-/* ========================== GroupBox =================================== */
-QGroupBox {
-    border: 1px solid #4C566A;
-    border-radius: 5px;
-    margin-top: 8px;
-    font-weight: bold;
-    padding: 5px;
+QPushButton:hover {
+    background-color: #5FA3F5;
 }
+
+QPushButton:pressed {
+    background-color: #2E5AA6;
+}
+
+QPushButton:disabled {
+    background-color: #2A2E3E;
+    color: #606A7A;
+}
+
+/* ========================== Buttons - Secondary ========================== */
+QPushButton#secondary {
+    background-color: #2A2E3E;
+    color: #E8EAED;
+    border: 1px solid #404855;
+}
+
+QPushButton#secondary:hover {
+    background-color: #323847;
+    border: 1px solid #505A6F;
+}
+
+/* ========================== Buttons - Danger ========================== */
+QPushButton#danger {
+    background-color: #E53935;
+    color: #FFFFFF;
+}
+
+QPushButton#danger:hover {
+    background-color: #F44336;
+}
+
+QPushButton#danger:pressed {
+    background-color: #C62828;
+}
+
+/* ========================== Buttons - Success ========================== */
+QPushButton#success {
+    background-color: #43A047;
+    color: #FFFFFF;
+}
+
+QPushButton#success:hover {
+    background-color: #4CAF50;
+}
+
+QPushButton#success:pressed {
+    background-color: #2E7D32;
+}
+
+/* ========================== Buttons - Toggle ========================== */
+QPushButton:checked {
+    background-color: #43A047;
+    color: #FFFFFF;
+}
+
+/* ========================== ComboBox & LineEdit ========================== */
+QComboBox, QLineEdit {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    font-size: 12px;
+    padding: 8px 12px;
+    border: 1px solid #404855;
+    border-radius: 6px;
+    min-height: 32px;
+    selection-background-color: #4A90E2;
+}
+
+QComboBox:focus, QLineEdit:focus {
+    border: 2px solid #4A90E2;
+    background-color: #212936;
+}
+
+QComboBox:hover, QLineEdit:hover {
+    border: 1px solid #505A6F;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #404855;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    color: #4A90E2;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    selection-background-color: #4A90E2;
+    border: 1px solid #404855;
+}
+
+/* ========================== GroupBox ========================== */
+QGroupBox {
+    border: 1px solid #404855;
+    border-radius: 8px;
+    margin-top: 12px;
+    font-weight: 600;
+    font-size: 13px;
+    padding: 12px;
+    color: #4A90E2;
+}
+
 QGroupBox::title {
     subcontrol-origin: margin;
-    padding: 0 4px;
-    color: #ECEFF4;
+    subcontrol-position: top left;
+    padding: 0 8px;
+    margin-left: 8px;
+    color: #4A90E2;
 }
 
-/* ========================== Slider ===================================== */
+/* ========================== Slider ========================== */
 QSlider::groove:horizontal {
-    border: 1px solid #4C566A;
-    height: 8px;
-    background: #3B4252;
-    border-radius: 4px;
+    border: none;
+    height: 6px;
+    background: #2A2E3E;
+    border-radius: 3px;
+    margin: 2px 0;
 }
+
 QSlider::handle:horizontal {
-    background: #5E81AC;
-    border: 1px solid #4C566A;
+    background: #4A90E2;
+    border: none;
+    width: 18px;
+    margin: -6px 0;
+    border-radius: 9px;
+}
+
+QSlider::handle:horizontal:hover {
+    background: #5FA3F5;
+}
+
+QSlider::handle:horizontal:pressed {
+    background: #2E5AA6;
+}
+
+/* ========================== CheckBox ========================== */
+QCheckBox {
+    color: #E8EAED;
+    spacing: 8px;
+    font-size: 12px;
+}
+
+QCheckBox::indicator {
     width: 16px;
-    margin: -4px 0;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid #404855;
+    background-color: #1A1E2E;
+}
+
+QCheckBox::indicator:hover {
+    border: 1px solid #4A90E2;
+    background-color: #212936;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #4A90E2;
+    border: 1px solid #4A90E2;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMCAxMCI+PHBvbHlsaW5lIHBvaW50cz0iMS41LDYgMy41LDggOC41LDIuNSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjUiIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgLz48L3N2Zz4=);
+}
+
+/* ========================== SpinBox ========================== */
+QSpinBox, QDoubleSpinBox {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    padding: 6px;
+    border: 1px solid #404855;
+    border-radius: 6px;
+    min-height: 32px;
+}
+
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 2px solid #4A90E2;
+}
+
+/* ========================== Video Display ========================== */
+QLabel#video_label {
+    border: 2px solid #404855;
+    background-color: #000000;
     border-radius: 8px;
 }
-QSlider::handle:horizontal:hover {
-    background: #81A1C1;
+
+/* ========================== ScrollArea ========================== */
+QScrollArea {
+    background-color: #0F1419;
+    border: none;
 }
 
-/* ========================== CheckBox =================================== */
-QCheckBox {
-    color: #ECEFF4;
-    spacing: 5px;
+QScrollArea > QWidget > QWidget {
+    background-color: #0F1419;
 }
 
-/* ========================== Label video ================================ */
-QLabel#video_label {
-    border: 2px solid #4C566A;
-    background-color: #1E222D;
+/* ========================== MessageBox ========================== */
+QMessageBox QLabel {
+    color: #E8EAED;
 }
+
+QMessageBox QDialogButtonBox QPushButton {
+    min-width: 80px;
+}
+
+/* ========================== FileDialog ========================== */
+QFileDialog QListView {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    gridline-color: #404855;
+}
+
+QFileDialog QTreeView {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    gridline-color: #404855;
+}
+
+QFileDialog QTableView {
+    background-color: #1A1E2E;
+    color: #E8EAED;
+    gridline-color: #404855;
+    selection-background-color: #4A90E2;
+}
+
+/* ========================== ColorDialog ========================== */
+QColorDialog QToolButton {
+    background-color: #1A1E2E;
+}
+
+QColorDialog QToolButton:pressed {
+    background-color: #4A90E2;
+}
+

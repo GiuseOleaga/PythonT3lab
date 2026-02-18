@@ -18,6 +18,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap, QColor, QMouseEvent
 import numpy as np
+import threading
+import queue
+import concurrent.futures
 from ultralytics import YOLO
 
 # =============================================================================================
@@ -56,7 +59,55 @@ class ClickableLabel(QLabel):
 
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
-            self.parent().handle_object_click(event.pos())
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'handle_object_click'):
+                try:
+                    parent.handle_object_click(event.pos())
+                except Exception:
+                    pass
+
+
+# Lightweight frame grabber thread to reduce blocking on network streams
+class FrameGrabber:
+    def __init__(self, cap):
+        self.cap = cap
+        self._frame = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                if self.cap is None:
+                    time.sleep(0.05)
+                    continue
+                ret, frame = self.cap.read()
+                if not ret:
+                    time.sleep(0.02)
+                    continue
+                with self._lock:
+                    self._frame = frame
+            except Exception:
+                time.sleep(0.05)
+
+    def get_frame(self):
+        with self._lock:
+            if self._frame is None:
+                return None
+            return self._frame.copy()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=0.5)
 
 # =============================================================================================
 # CLASSE PRINCIPALE
@@ -121,6 +172,10 @@ class FaceApp(QWidget):
         if not self.cap.isOpened():
             raise RuntimeError("Impossibile aprire la webcam principale.")
 
+        # Start background frame grabber to smooth reads (helps network streams)
+        self.frame_grabber = FrameGrabber(self.cap)
+        self.frame_grabber.start()
+
         # Face detector (Haar Cascade)
         self.detector = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -135,6 +190,10 @@ class FaceApp(QWidget):
         self.yolo_rect_thickness = 2
         self.yolo_results_cache = []  # Cache for YOLO results
         self.frame_counter = 0
+        # Background executor for YOLO to avoid blocking UI
+        self.yolo_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.yolo_future = None
+        self.yolo_freq = 6  # run YOLO every N frames
 
         # Interfaccia - Usa ClickableLabel invece di QLabel
         self.video_label = ClickableLabel(self)
@@ -165,7 +224,7 @@ class FaceApp(QWidget):
         settings_layout.addWidget(self.create_yolo_group())
         settings_layout.addWidget(self.create_feedback_group())
         settings_layout.addWidget(self.create_savepath_group())
-        settings_layout.addWidget(self.create_object_group())
+        # object recognition UI removed per user request
         settings_layout.addStretch()
 
         settings_container = QWidget()
@@ -184,7 +243,7 @@ class FaceApp(QWidget):
 
         sidebar_widget = QWidget()
         sidebar_widget.setLayout(sidebar_layout)
-        sidebar_widget.setFixedWidth(330)
+        sidebar_widget.setFixedWidth(420)
         self.sidebar_widget = sidebar_widget
 
         # Layout principale
@@ -273,6 +332,7 @@ class FaceApp(QWidget):
         self.record_button.setStyleSheet("background-color: #173c68; color: white;")
         layout.addWidget(self.record_button)
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     def create_face_group(self):
@@ -302,6 +362,7 @@ class FaceApp(QWidget):
         self.zoom_slider.valueChanged.connect(self.update_zoom)
         layout.addWidget(self.zoom_slider)
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     def create_yolo_group(self):
@@ -334,6 +395,7 @@ class FaceApp(QWidget):
         layout.addWidget(self.yolo_thickness_slider)
 
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     def create_feedback_group(self):
@@ -365,6 +427,7 @@ class FaceApp(QWidget):
         self.last_video_label = QLabel(f"Ultimo video: {self.last_video}")
         layout.addWidget(self.last_video_label)
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     def create_savepath_group(self):
@@ -376,6 +439,7 @@ class FaceApp(QWidget):
         self.change_path_button.clicked.connect(self.change_save_path)
         layout.addWidget(self.change_path_button)
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     def create_object_group(self):
@@ -398,6 +462,7 @@ class FaceApp(QWidget):
         layout.addWidget(btn_clear)
 
         group.setLayout(layout)
+        group.setMaximumWidth(380)
         return group
 
     # ========================================================================
@@ -422,18 +487,40 @@ class FaceApp(QWidget):
     def change_camera(self, index):
         if index < 0 or index >= self.cam_selector.count():
             return
-
-        if self.cap.isOpened():
-            self.cap.release()
+        # Release current capture if necessary
+        try:
+            if self.cap is not None and self.cap.isOpened():
+                self.cap.release()
+        except Exception:
+            pass
 
         if index == len(self.available_indices):  # Opzione "Camera Telefono"
-            url = self.phone_url_input.text().strip() or "http://10.30.23.5:8080/video"  # Default dal messaggio utente
-            self.cap = cv2.VideoCapture(url)
-            if not self.cap.isOpened():
+            url = self.phone_url_input.text().strip() or "http://10.30.23.5:8080/video"
+            # Prefer FFMPEG backend for network streams; fallback to default if not available
+            opened = False
+            try:
+                self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                opened = self.cap.isOpened()
+            except Exception:
+                opened = False
+
+            if not opened:
+                # Try without specifying backend
+                self.cap = cv2.VideoCapture(url)
+                opened = self.cap.isOpened()
+
+            if not opened:
                 QMessageBox.warning(self, "Errore", "Impossibile connettere alla camera del telefono. Verifica l'URL e la connessione.")
-                self.cap = cv2.VideoCapture(self.current_cam_index)  # Torna alla default
+                # Try to reopen previous local camera
+                try:
+                    self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
+                except Exception:
+                    self.cap = None
                 return
+
             self.current_cam_name = "Camera Telefono"
+            # mark a sentinel index for phone stream
+            self.current_cam_index = -1
         else:
             new_index = self.available_indices[index]
             new_name = self.available_names[index]
@@ -443,6 +530,18 @@ class FaceApp(QWidget):
                 return
             self.current_cam_index = new_index
             self.current_cam_name = new_name
+        # restart frame grabber to use the new capture object
+        try:
+            if hasattr(self, 'frame_grabber') and self.frame_grabber:
+                self.frame_grabber.stop()
+        except Exception:
+            pass
+
+        try:
+            self.frame_grabber = FrameGrabber(self.cap)
+            self.frame_grabber.start()
+        except Exception:
+            pass
 
         self.cam_name_label.setText(f"Webcam attiva: {self.current_cam_name}")
 
@@ -470,7 +569,21 @@ class FaceApp(QWidget):
             self.start_button.setText("Start Camera")
             self.start_button.setStyleSheet("background-color: green; color: white;")
         else:
-            self.timer.start(30)
+            # If the user has selected the phone camera option, ensure it's opened now
+            try:
+                current_idx = self.cam_selector.currentIndex()
+            except Exception:
+                current_idx = -999
+
+            if current_idx == len(self.available_indices):
+                # attempt to (re)open phone stream using current URL
+                self.change_camera(current_idx)
+                if not (self.cap and self.cap.isOpened()):
+                    QMessageBox.warning(self, "Errore", "Impossibile aprire lo stream del telefono. Verifica l'URL e la rete.")
+                    return
+
+            # use a slightly lower update rate to reduce CPU usage
+            self.timer.start(40)
             self.start_button.setText("Stop Camera")
             self.start_button.setStyleSheet("background-color: red; color: white;")
         self.running = not self.running
@@ -551,7 +664,21 @@ class FaceApp(QWidget):
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.video_writer = cv2.VideoWriter(full_path, fourcc, 30, (w, h))
+            # Some network streams (e.g. IP Webcam) may not report width/height via properties.
+            # Fallback to the last_frame dimensions if available.
+            if (w == 0 or h == 0) and self.last_frame is not None:
+                h, w = self.last_frame.shape[:2]
+
+            # Use a conservative fps for saving to reduce CPU usage during encoding
+            target_fps = 20
+            try:
+                cur_fps = int(self.fps)
+                if 8 <= cur_fps <= 30:
+                    target_fps = cur_fps
+            except Exception:
+                pass
+
+            self.video_writer = cv2.VideoWriter(full_path, fourcc, target_fps, (w, h))
 
             if not self.video_writer.isOpened():
                 QMessageBox.warning(self, "Errore", "Impossibile creare il video.")
@@ -598,8 +725,14 @@ class FaceApp(QWidget):
     # UPDATE FRAME (CUORE DELL'APPLICAZIONE)
     # ========================================================================
     def update_frame(self):
-        ret, frame = self.cap.read()
-        if not ret:
+        # Read latest frame from background grabber to avoid blocking UI
+        frame = None
+        try:
+            frame = self.frame_grabber.get_frame()
+        except Exception:
+            frame = None
+
+        if frame is None:
             return
 
         frame = cv2.flip(frame, 1)
@@ -619,16 +752,17 @@ class FaceApp(QWidget):
             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Motion detection
+        # Motion detection on downscaled frame for speed
         if self.motion_enabled:
+            small = cv2.resize(gray, (0, 0), fx=0.5, fy=0.5)
             if self.prev_gray is None:
-                self.prev_gray = gray.copy()
+                self.prev_gray = small.copy()
             else:
-                delta = cv2.absdiff(self.prev_gray, gray)
+                delta = cv2.absdiff(self.prev_gray, small)
                 thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
                 motion_pixels = cv2.countNonZero(thresh)
 
-                if motion_pixels > self.motion_threshold:
+                if motion_pixels > max(500, int(self.motion_threshold * 0.25)):
                     self.motion_last_seen = time.time()
                     if not self.recording:
                         self.toggle_recording()
@@ -638,7 +772,7 @@ class FaceApp(QWidget):
                         time.time() - self.motion_last_seen > self.motion_grace_seconds):
                         self.toggle_recording()
                         self.motion_recording_active = False
-                self.prev_gray = gray.copy()
+                self.prev_gray = small.copy()
 
         # Rilevamento volti
         faces = self.detector.detectMultiScale(gray, 1.3, 5, minSize=(40,40))
@@ -684,36 +818,60 @@ class FaceApp(QWidget):
             cv2.putText(frame, self.location, (10, frame.shape[0]-40),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 2)
 
-        # Rilevamento oggetti con YOLO (ogni 3 frame per performance)
+        # Rilevamento oggetti con YOLO in background to avoid UI blocking
         self.frame_counter += 1
         if self.yolo_enabled:
-            if self.frame_counter % 3 == 0:
-                # Run YOLO on optimized resolution (960x720) for balance between accuracy and speed
-                h_orig, w_orig = frame.shape[:2]
-                small_frame = cv2.resize(frame, (960, 720))
-                results = self.yolo_model(small_frame, verbose=False, conf=0.45)
-                
-                # Scale factors to map detections back to original frame
-                scale_x = w_orig / 960.0
-                scale_y = h_orig / 720.0
-                
-                # Cache the results
-                self.yolo_results_cache = []
-                for r in results:
-                    for box in r.boxes:
-                        cls = int(box.cls[0])
-                        conf = box.conf[0]
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        # Scale coordinates back to original frame
-                        x1 = int(x1 * scale_x)
-                        y1 = int(y1 * scale_y)
-                        x2 = int(x2 * scale_x)
-                        y2 = int(y2 * scale_y)
-                        self.yolo_results_cache.append({
-                            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
-                            'label': f"{r.names[cls]} {conf:.2f}"
-                        })
-            
+            # Submit a job every yolo_freq frames if none is running
+            if (self.frame_counter % self.yolo_freq) == 0 and (self.yolo_future is None or self.yolo_future.done()):
+                try:
+                    h_orig, w_orig = frame.shape[:2]
+                    small_frame = cv2.resize(frame, (640, 480))
+                    # submit inference to background thread via lambda to ensure keyword args are respected
+                    self._yolo_scale = (w_orig / 640.0, h_orig / 480.0)
+                    self.yolo_future = self.yolo_executor.submit(lambda sf=small_frame: self.yolo_model(sf, verbose=False, conf=0.45))
+                except Exception as e:
+                    logger.warning(f"YOLO submit failed: {e}")
+                    self.yolo_future = None
+
+            # If previous job finished, fetch and cache results
+            if self.yolo_future is not None and self.yolo_future.done():
+                try:
+                    raw = self.yolo_future.result()
+                    # ultralytics may return a Results object or a list; normalize to iterable
+                    if hasattr(raw, 'boxes'):
+                        results_iter = [raw]
+                    elif isinstance(raw, (list, tuple)):
+                        results_iter = list(raw)
+                    else:
+                        results_iter = [raw]
+
+                    scale_x, scale_y = getattr(self, '_yolo_scale', (1.0, 1.0))
+                    new_cache = []
+                    for r in results_iter:
+                        # each r should have .boxes and .names
+                        boxes = getattr(r, 'boxes', None)
+                        names = getattr(r, 'names', {})
+                        if boxes is None:
+                            continue
+                        for box in boxes:
+                            try:
+                                cls = int(box.cls[0])
+                                conf = float(box.conf[0])
+                                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                                x1 = int(x1 * scale_x)
+                                y1 = int(y1 * scale_y)
+                                x2 = int(x2 * scale_x)
+                                y2 = int(y2 * scale_y)
+                                label = f"{names.get(cls, cls)} {conf:.2f}"
+                                new_cache.append({'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'label': label})
+                            except Exception:
+                                continue
+                    self.yolo_results_cache = new_cache
+                except Exception as e:
+                    logger.warning(f"YOLO result handling failed: {e}")
+                    self.yolo_results_cache = []
+                    self.yolo_future = None
+
             # Draw cached results on all frames
             for detection in self.yolo_results_cache:
                 cv2.rectangle(frame, (detection['x1'], detection['y1']), (detection['x2'], detection['y2']), 
@@ -830,7 +988,8 @@ class FaceApp(QWidget):
             QMessageBox.warning(self, "Errore", "Inserisci un nome valido.")
             return False
 
-        orb = cv2.ORB_create(nfeatures=1200)  # aumentato perché frame intero
+        # Reduce ORB features to lower CPU/memory usage
+        orb = cv2.ORB_create(nfeatures=600)
         kp, des = orb.detectAndCompute(crop_bgr, None)
 
         if des is None or len(des) < 40:
@@ -862,8 +1021,7 @@ class FaceApp(QWidget):
     def recognize_object(self, gray):
         if not self.known_descriptors:
             return None
-
-        orb = cv2.ORB_create(nfeatures=1200)
+        orb = cv2.ORB_create(nfeatures=600)
         kp_frame, des_frame = orb.detectAndCompute(gray, None)
         if des_frame is None or len(des_frame) < 40:
             return None
@@ -929,6 +1087,18 @@ class FaceApp(QWidget):
             self.cap.release()
         if self.video_writer:
             self.video_writer.release()
+        # Stop background frame grabber and YOLO executor
+        try:
+            if hasattr(self, 'frame_grabber') and self.frame_grabber:
+                self.frame_grabber.stop()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'yolo_executor') and self.yolo_executor:
+                self.yolo_executor.shutdown(wait=False)
+        except Exception:
+            pass
         event.accept()
 
 # =============================================================================================
