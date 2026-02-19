@@ -52,6 +52,85 @@ MIN_GOOD_MATCHES = 15              # aumentato un po' perché usiamo frame inter
 MATCH_DISTANCE_THRESHOLD = 65
 MIN_SCORE = 0.28
 
+
+def open_camera_with_fallback(index):
+    """
+    Try to open a camera with multiple backend fallbacks for better compatibility
+    with PyInstaller-packaged executables.
+    Returns tuple of (cap object or None, backend used or None).
+    """
+    import platform
+    
+    # Only apply fallback on Windows
+    if platform.system() != 'Windows':
+        cap = cv2.VideoCapture(index)
+        if cap.isOpened():
+            return cap, "default"
+        return None, None
+    
+    # On Windows, try multiple backends in order of compatibility
+    # CAP_DSHOW: DirectShow - most compatible, works without extra DLLs
+    # CAP_MSMF: Microsoft Media Foundation - default but may have issues in packaged apps
+    # CAP_VFW: Video for Windows - legacy but reliable
+    
+    backends = [
+        (cv2.CAP_DSHOW, "DSHOW"),
+        (cv2.CAP_MSMF, "MSMF"),
+        (cv2.CAP_VFW, "VFW"),
+    ]
+    
+    for backend, backend_name in backends:
+        try:
+            cap = cv2.VideoCapture(index, backend)
+            if cap.isOpened():
+                # Test if we can actually read a frame
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    logger.info(f"Camera opened successfully with {backend_name} backend")
+                    return cap, backend_name
+                # Can open but can't read - release and try next
+                cap.release()
+        except Exception as e:
+            logger.warning(f"Failed to open camera with {backend_name}: {e}")
+            continue
+    
+    # Last resort - try without specifying backend
+    try:
+        cap = cv2.VideoCapture(index)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                logger.info("Camera opened with default backend")
+                return cap, "default"
+            cap.release()
+    except Exception as e:
+        logger.warning(f"Failed to open camera with default backend: {e}")
+    
+    return None, None
+
+
+def scan_webcams_with_fallback():
+    """
+    Scan for available webcams using multiple backends.
+    Returns tuple of (indices, names).
+    """
+    indices = []
+    names = []
+    
+    for i in range(10):
+        try:
+            cap, backend = open_camera_with_fallback(i)
+            if cap is not None:
+                indices.append(i)
+                names.append(f"Webcam {i}")
+                cap.release()
+                logger.info(f"Found webcam {i}")
+        except:
+            continue
+    
+    return indices, names
+
+
 # =============================================================================================
 # SUBCLASS PER QLabel CLICCABILE
 # =============================================================================================
@@ -163,16 +242,25 @@ class FaceApp(QWidget):
         except Exception:
             pass
 
-        # Webcam
-        self.available_indices, self.available_names = self.scan_webcams()
+        # Webcam - Use fallback mechanism for better compatibility
+        logger.info("Inizializzazione webcam...")
+        self.available_indices, self.available_names = scan_webcams_with_fallback()
+        
         if not self.available_indices:
+            logger.error("Nessuna webcam trovata")
             raise RuntimeError("Nessuna webcam trovata.")
 
         self.current_cam_index = self.available_indices[0]
         self.current_cam_name = self.available_names[0]
-        self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
-        if not self.cap.isOpened():
+        
+        # Try to open with fallback mechanism
+        self.cap, self.current_backend = open_camera_with_fallback(self.current_cam_index)
+        
+        if self.cap is None or not self.cap.isOpened():
+            logger.error("Impossibile aprire la webcam principale")
             raise RuntimeError("Impossibile aprire la webcam principale.")
+        
+        logger.info(f"Webcam aperta: {self.current_cam_name} con backend {self.current_backend}")
 
         # Start background frame grabber to smooth reads (helps network streams)
         self.frame_grabber = FrameGrabber(self.cap)
@@ -317,20 +405,8 @@ class FaceApp(QWidget):
     # WEBCAM
     # ========================================================================
     def scan_webcams(self):
-        indices = []
-        names = []
-        for i in range(10):
-            try:
-                cap = cv2.VideoCapture(i, cv2.CAP_MSMF)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    if ret:
-                        indices.append(i)
-                        names.append(f"Webcam {i}")
-                    cap.release()
-            except:
-                continue
-        return indices, names
+        """Legacy scan function - now uses fallback mechanism."""
+        return scan_webcams_with_fallback()
 
     # ========================================================================
     # CREAZIONE PANNELLI
@@ -591,7 +667,7 @@ class FaceApp(QWidget):
                 QMessageBox.warning(self, "Errore", "Impossibile connettere alla camera del telefono. Verifica l'URL e la connessione.")
                 # Try to reopen previous local camera
                 try:
-                    self.cap = cv2.VideoCapture(self.current_cam_index, cv2.CAP_MSMF)
+                    self.cap, _ = open_camera_with_fallback(self.current_cam_index)
                 except Exception:
                     self.cap = None
                 return
@@ -602,12 +678,18 @@ class FaceApp(QWidget):
         else:
             new_index = self.available_indices[index]
             new_name = self.available_names[index]
-            self.cap = cv2.VideoCapture(new_index, cv2.CAP_MSMF)
-            if not self.cap.isOpened():
+            
+            # Use fallback mechanism for camera opening
+            self.cap, backend = open_camera_with_fallback(new_index)
+            
+            if self.cap is None or not self.cap.isOpened():
                 QMessageBox.warning(self, "Errore", "Impossibile aprire la webcam selezionata.")
                 return
+            
             self.current_cam_index = new_index
             self.current_cam_name = new_name
+            self.current_backend = backend
+            
         # restart frame grabber to use the new capture object
         try:
             if hasattr(self, 'frame_grabber') and self.frame_grabber:
