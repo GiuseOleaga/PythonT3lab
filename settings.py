@@ -120,10 +120,20 @@ class SettingsManager:
     
     def get_theme_colors(self) -> ThemeColors:
         """Get current theme colors"""
-        if self._settings.theme_mode == ThemeMode.LIGHT.value:
+        mode = self._settings.theme_mode
+        if mode == ThemeMode.LIGHT.value:
             colors = self.LIGHT_THEME
-        else:
+        elif mode == ThemeMode.DARK.value:
             colors = self.DARK_THEME
+        else:
+            # SYSTEM: try to detect platform preference, fallback to LIGHT
+            try:
+                if self._system_prefers_light():
+                    colors = self.LIGHT_THEME
+                else:
+                    colors = self.DARK_THEME
+            except Exception:
+                colors = self.LIGHT_THEME
         
         # Apply custom colors if set
         if self._settings.custom_colors:
@@ -138,6 +148,25 @@ class SettingsManager:
         if mode in [m.value for m in ThemeMode]:
             self._settings.theme_mode = mode
             self.save_settings()
+
+    def _system_prefers_light(self) -> bool:
+        """Try to detect if the OS/app prefers light theme. Returns True if light."""
+        try:
+            import platform
+            if platform.system() == "Windows":
+                try:
+                    import winreg
+                    registry = winreg.ConnectRegistry(None, winreg.HKEY_CURRENT_USER)
+                    key = winreg.OpenKey(registry, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+                    # AppsUseLightTheme == 1 => light
+                    val, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+                    return bool(val)
+                except Exception:
+                    return True
+            # macOS and Linux heuristics could be expanded; default to light
+            return True
+        except Exception:
+            return True
     
     def set_save_path(self, path: str):
         """Set save path"""

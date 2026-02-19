@@ -22,6 +22,8 @@ import threading
 import queue
 import concurrent.futures
 from ultralytics import YOLO
+from settings import settings_manager, ThemeMode
+from theme_engine import ThemeEngine
 
 # =============================================================================================
 # CONFIGURAZIONE LOGGING
@@ -224,6 +226,7 @@ class FaceApp(QWidget):
         settings_layout.addWidget(self.create_yolo_group())
         settings_layout.addWidget(self.create_feedback_group())
         settings_layout.addWidget(self.create_savepath_group())
+        settings_layout.addWidget(self.create_theme_group())
         # object recognition UI removed per user request
         settings_layout.addStretch()
 
@@ -236,9 +239,7 @@ class FaceApp(QWidget):
         self.scroll_area = scroll_area
 
         sidebar_layout = QVBoxLayout()
-        self.toggle_sidebar_button = QPushButton("Nascondi impostazioni")
-        self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
-        sidebar_layout.addWidget(self.toggle_sidebar_button)
+        # sidebar will contain only the scroll area (controls)
         sidebar_layout.addWidget(scroll_area, 1)
 
         sidebar_widget = QWidget()
@@ -246,14 +247,40 @@ class FaceApp(QWidget):
         sidebar_widget.setFixedWidth(420)
         self.sidebar_widget = sidebar_widget
 
+        # Top controls (independent from sidebar): Start/Stop camera and settings toggle
+        top_controls = QWidget()
+        top_h = QHBoxLayout()
+        top_h.setContentsMargins(0, 0, 0, 0)
+        # Start/Stop camera button (independent)
+        self.start_button = QPushButton("Start Camera")
+        self.start_button.clicked.connect(self.toggle_camera)
+        self.start_button.setStyleSheet("background-color: green; color: white;")
+        self.start_button.setFixedWidth(120)
+        top_h.addWidget(self.start_button)
+
+        # Settings toggle button (gear / arrow)
+        self.toggle_sidebar_button = QPushButton("⚙")
+        self.toggle_sidebar_button.setToolTip("Mostra impostazioni")
+        self.toggle_sidebar_button.setFixedWidth(40)
+        self.toggle_sidebar_button.clicked.connect(self.toggle_sidebar)
+        top_h.addWidget(self.toggle_sidebar_button)
+
+        top_controls.setLayout(top_h)
+
         # Layout principale
         video_layout = QVBoxLayout()
+        video_layout.addWidget(top_controls)
         video_layout.addWidget(self.cam_name_label)
         video_layout.addWidget(self.video_label)
 
         main_layout = QHBoxLayout(self)
         main_layout.addWidget(self.sidebar_widget, 0)
         main_layout.addLayout(video_layout, 1)
+        # Start with sidebar hidden
+        self.sidebar_widget.hide()
+        # Ensure toggle button shows gear when hidden
+        self.toggle_sidebar_button.setText("⚙")
+        self.toggle_sidebar_button.setToolTip("Mostra impostazioni")
 
     # ========================================================================
     # METODI STATISTICHE
@@ -321,12 +348,7 @@ class FaceApp(QWidget):
         self.phone_url_input = QLineEdit()
         self.phone_url_input.setPlaceholderText("Inserisci URL telefono (es. http://10.30.23.5:8080/video)")
         layout.addWidget(self.phone_url_input)
-
-        self.start_button = QPushButton("Start Camera")
-        self.start_button.clicked.connect(self.toggle_camera)
-        self.start_button.setStyleSheet("background-color: green; color: white;")
-        layout.addWidget(self.start_button)
-
+        # Start/Stop camera button is placed in the top controls (independent)
         self.record_button = QPushButton("Start Recording")
         self.record_button.clicked.connect(self.toggle_recording)
         self.record_button.setStyleSheet("background-color: #173c68; color: white;")
@@ -442,6 +464,32 @@ class FaceApp(QWidget):
         group.setMaximumWidth(380)
         return group
 
+    def create_theme_group(self):
+        group = QGroupBox("Tema")
+        layout = QVBoxLayout()
+        self.theme_combo = QComboBox()
+        # Show in Italian for clarity
+        self.theme_combo.addItem("Sistema", ThemeMode.SYSTEM.value)
+        self.theme_combo.addItem("Chiaro", ThemeMode.LIGHT.value)
+        self.theme_combo.addItem("Scuro", ThemeMode.DARK.value)
+        # initialize selection from settings
+        cur = settings_manager.get_theme_mode()
+        idx = 0
+        for i in range(self.theme_combo.count()):
+            if self.theme_combo.itemData(i) == cur:
+                idx = i
+                break
+        self.theme_combo.setCurrentIndex(idx)
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        layout.addWidget(self.theme_combo)
+        # Color picker for 'details' (primary accent)
+        self.detail_color_button = QPushButton("Colore dettagli")
+        self.detail_color_button.clicked.connect(self.choose_detail_color)
+        layout.addWidget(self.detail_color_button)
+        group.setLayout(layout)
+        group.setMaximumWidth(380)
+        return group
+
     def create_object_group(self):
         group = QGroupBox("Riconoscimento Oggetti")
         layout = QVBoxLayout()
@@ -475,13 +523,43 @@ class FaceApp(QWidget):
             self.path_label.setText(folder)
             self.save_stats()
 
+    def on_theme_changed(self, index: int):
+        mode = self.theme_combo.itemData(index)
+        try:
+            settings_manager.set_theme_mode(mode)
+        except Exception:
+            pass
+
+    def choose_detail_color(self):
+        # Open QColorDialog to choose primary/accent color
+        try:
+            current = settings_manager.get_theme_colors().primary
+            color = QColor(current)
+            picked = QColorDialog.getColor(color, self, "Scegli colore dettagli")
+            if picked.isValid():
+                hexc = picked.name()
+                settings_manager.set_custom_color('primary', hexc)
+                qss = ThemeEngine.generate_stylesheet(settings_manager.get_theme_colors())
+                QApplication.instance().setStyleSheet(qss)
+        except Exception:
+            pass
+        # Apply stylesheet immediately
+        try:
+            qss = ThemeEngine.generate_stylesheet(settings_manager.get_theme_colors())
+            QApplication.instance().setStyleSheet(qss)
+        except Exception:
+            pass
+
     def toggle_sidebar(self):
-        if self.scroll_area.isVisible():
-            self.scroll_area.hide()
-            self.toggle_sidebar_button.setText("Mostra impostazioni")
+        # Toggle the whole sidebar widget visibility and update the small toggle icon
+        if self.sidebar_widget.isVisible():
+            self.sidebar_widget.hide()
+            self.toggle_sidebar_button.setText("⚙")
+            self.toggle_sidebar_button.setToolTip("Mostra impostazioni")
         else:
-            self.scroll_area.show()
-            self.toggle_sidebar_button.setText("Nascondi impostazioni")
+            self.sidebar_widget.show()
+            self.toggle_sidebar_button.setText("←")
+            self.toggle_sidebar_button.setToolTip("Nascondi impostazioni")
         self.update()
 
     def change_camera(self, index):
@@ -1106,10 +1184,11 @@ class FaceApp(QWidget):
 # =============================================================================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Apply theme from settings (generated QSS)
     try:
-        with open("style.qss", "r", encoding="utf-8") as f:
-            app.setStyleSheet(f.read())
-    except FileNotFoundError:
+        qss = ThemeEngine.generate_stylesheet(settings_manager.get_theme_colors())
+        app.setStyleSheet(qss)
+    except Exception:
         pass
 
     window = FaceApp()

@@ -103,21 +103,21 @@ QPushButton#danger:pressed {
 
 /* ========================== Buttons - Success ========================== */
 QPushButton#success {
-    background-color: #43A047;
+    background-color: #e8910f;
     color: #FFFFFF;
 }
 
 QPushButton#success:hover {
-    background-color: #4CAF50;
+    background-color: #e8910f;
 }
 
 QPushButton#success:pressed {
-    background-color: #2E7D32;
+    background-color: #e8910f;
 }
 
 /* ========================== Buttons - Toggle ========================== */
 QPushButton:checked {
-    background-color: #43A047;
+    background-color: #e8910f;
     color: #FFFFFF;
 }
 
